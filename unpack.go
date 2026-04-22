@@ -9,56 +9,41 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-func unpack(input, output string) error {
-	in, err := os.Open(input)
-	if err != nil {
-		return err
-	}
+func unpack(input, output, password string) error {
+	in, _ := os.Open(input)
 	defer in.Close()
 
-	out, err := os.Create(output)
-	if err != nil {
-		return err
-	}
+	out, _ := os.Create(output)
 	defer out.Close()
 
-	_, err = readHeader(in)
-	if err != nil {
-		return err
-	}
+	_, _ = readHeader(in)
+
+	var encHeader EncHeader
+	binary.Read(in, binary.LittleEndian, &encHeader)
+
+	key := deriveKey(password, encHeader.Salt[:])
 
 	decoder, _ := zstd.NewReader(nil)
 
 	for {
-		var compSize uint32
-		err := binary.Read(in, binary.LittleEndian, &compSize)
+		var size uint32
+		err := binary.Read(in, binary.LittleEndian, &size)
 		if err == io.EOF {
 			break
 		}
-		if err != nil {
-			return err
-		}
 
-		var origSize uint32
-		if err := binary.Read(in, binary.LittleEndian, &origSize); err != nil {
-			return err
-		}
+		var orig uint32
+		binary.Read(in, binary.LittleEndian, &orig)
 
-		comp := make([]byte, compSize)
-		if _, err := io.ReadFull(in, comp); err != nil {
-			return err
-		}
+		buf := make([]byte, size)
+		io.ReadFull(in, buf)
 
-		data, err := decoder.DecodeAll(comp, nil)
-		if err != nil {
-			return err
-		}
+		dec, _ := decrypt(buf, key, encHeader.Nonce[:])
+		data, _ := decoder.DecodeAll(dec, nil)
 
-		if _, err := out.Write(data); err != nil {
-			return err
-		}
+		out.Write(data)
 	}
 
-	fmt.Println("Unpacked:", output)
+	fmt.Println("Unpacked")
 	return nil
 }
