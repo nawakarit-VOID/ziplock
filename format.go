@@ -8,12 +8,16 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"io"
 
 	"golang.org/x/crypto/pbkdf2"
 )
 
-var magic = []byte("MYZ1")
+var (
+	magicV1 = []byte("MYZ1")
+	magicV2 = []byte("MYZ2")
+)
 
 type EncHeader struct {
 	Salt  [16]byte
@@ -21,21 +25,41 @@ type EncHeader struct {
 }
 
 type Header struct {
-	Version   uint8
-	ChunkSize uint32
-	FileSize  uint64
+	Version    uint8
+	Flags      uint8
+	Reserved   uint16
+	ChunkSize  uint32
+	FileSize   uint64
+	ChunkCount uint32
+	Salt       [16]byte
 }
 
-type ChunkMeta struct {
-	Offset   uint64
-	CompSize uint32
+type ChunkHeader struct {
+	Index    uint32
 	OrigSize uint32
-	CRC32    uint32
+	CompSize uint32
 	Nonce    [12]byte
 }
 
-func writeHeader(w io.Writer, h Header) error {
+const (
+	formatVersionV1 = 1
+	formatVersionV2 = 2
+	formatVersionV3 = 3
+	headerSizeV3    = 1 + 1 + 2 + 4 + 8 + 4 + 16
+	chunkHeaderSize  = 4 + 4 + 4 + 12
+)
+
+var errBadMagic = errors.New("invalid archive magic")
+
+func writeMagic(w io.Writer, magic []byte) error {
 	if _, err := w.Write(magic); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeHeader(w io.Writer, h Header) error {
+	if err := writeMagic(w, magicV2); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.LittleEndian, h); err != nil {
@@ -49,8 +73,8 @@ func readHeader(r io.Reader) (*Header, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	if string(buf) != "MYZ1" {
-		return nil, io.ErrUnexpectedEOF
+	if string(buf) != string(magicV2) && string(buf) != string(magicV1) {
+		return nil, errBadMagic
 	}
 	var h Header
 	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
@@ -59,20 +83,55 @@ func readHeader(r io.Reader) (*Header, error) {
 	return &h, nil
 }
 
-// 🔑 helper: derive key (PBKDF2 แบบง่าย)
+func writeChunkHeader(w io.Writer, h ChunkHeader) error {
+	return binary.Write(w, binary.LittleEndian, h)
+}
+
+func readChunkHeader(r io.Reader) (*ChunkHeader, error) {
+	var h ChunkHeader
+	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func makeArchiveHeader(version uint8, chunkSize uint32, fileSize uint64, chunkCount uint32, salt [16]byte) Header {
+	return Header{
+		Version:    version,
+		Flags:      0,
+		Reserved:   0,
+		ChunkSize:  chunkSize,
+		FileSize:   fileSize,
+		ChunkCount: chunkCount,
+		Salt:       salt,
+	}
+}
+
+// deriveKey creates the archive key from password and salt.
 func deriveKey(password string, salt []byte) []byte {
 	return pbkdf2.Key([]byte(password), salt, 100000, 32, sha256.New)
 }
 
-// 🔐 encrypt/decrypt helper
+func newAEAD(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
 func encrypt(data, key, nonce []byte) ([]byte, error) {
-	block, _ := aes.NewCipher(key)
-	aead, _ := cipher.NewGCM(block)
+	aead, err := newAEAD(key)
+	if err != nil {
+		return nil, err
+	}
 	return aead.Seal(nil, nonce, data, nil), nil
 }
 
 func decrypt(data, key, nonce []byte) ([]byte, error) {
-	block, _ := aes.NewCipher(key)
-	aead, _ := cipher.NewGCM(block)
+	aead, err := newAEAD(key)
+	if err != nil {
+		return nil, err
+	}
 	return aead.Open(nil, nonce, data, nil)
 }
