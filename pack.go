@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -25,6 +27,8 @@ type Result struct {
 }
 
 const chunkSize = 1 << 20 // 1MB
+const workerCount = 4
+const pipelineDepth = workerCount * 2
 
 func pack(input, output, password string) error {
 	in, err := os.Open(input)
@@ -59,46 +63,68 @@ func pack(input, output, password string) error {
 
 	key := deriveKey(password, salt[:])
 
-	encoder, err := zstd.NewWriter(nil)
-	if err != nil {
-		return err
+	jobs := make(chan Job, pipelineDepth)
+	results := make(chan Result, pipelineDepth)
+	var wg sync.WaitGroup
+
+	workerTotal := workerCount
+	if cpu := runtime.NumCPU(); cpu > 0 && cpu < workerTotal {
+		workerTotal = cpu
 	}
-	defer encoder.Close()
+	if workerTotal < 1 {
+		workerTotal = 1
+	}
 
-	jobs := make(chan Job, 4)
-	results := make(chan Result, 4)
-
-	// worker
-	for w := 0; w < 4; w++ {
+	for w := 0; w < workerTotal; w++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
+			encoder, err := zstd.NewWriter(nil)
+			if err != nil {
+				return
+			}
+			defer encoder.Close()
+
 			for job := range jobs {
 				comp := encoder.EncodeAll(job.data, nil)
 				var nonce [12]byte
-				_, _ = rand.Read(nonce[:])
-				enc, _ := encrypt(comp, key, nonce[:])
+				if _, err := rand.Read(nonce[:]); err != nil {
+					continue
+				}
+				enc, err := encrypt(comp, key, nonce[:])
+				if err != nil {
+					continue
+				}
 				results <- Result{index: job.index, data: enc, orig: len(job.data), nonce: nonce}
 			}
 		}()
 	}
 
-	// reader
 	go func() {
-		buf := make([]byte, chunkSize)
-		i := 0
-		for {
-			n, err := in.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				jobs <- Job{i, data}
-				i++
-			}
-			if err == io.EOF {
-				break
-			}
-		}
-		close(jobs)
+		wg.Wait()
+		close(results)
 	}()
+
+	buf := make([]byte, chunkSize)
+	i := 0
+	for {
+		n, err := in.Read(buf)
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			jobs <- Job{i, data}
+			i++
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			close(jobs)
+			return err
+		}
+	}
+	close(jobs)
 
 	// writer (ordered)
 	expected := 0
@@ -136,9 +162,6 @@ func pack(input, output, password string) error {
 			expected++
 		}
 
-		if totalWritten >= int64(fileSize) {
-			break
-		}
 	}
 
 	fmt.Println("\nDone")
