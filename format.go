@@ -27,6 +27,8 @@ type ChunkMeta struct {
 	Offset   uint64
 	CompSize uint32
 	OrigSize uint32
+	CRC32    uint32
+	Nonce    [12]byte
 }
 
 func writeHeader(w io.Writer, h Header) error {
