@@ -7,6 +7,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"fyne.io/fyne/v2"
@@ -60,17 +61,23 @@ func runGUI() {
 	icon := loadIcon(64)
 	a.SetIcon(icon)
 
-	inputPath := widget.NewEntry()
-	outputPath := widget.NewEntry()
-	password := widget.NewPasswordEntry()
+	packInputPath := widget.NewEntry()
+	packOutputPath := widget.NewEntry()
+	packPassword := widget.NewPasswordEntry()
+	unpackInputPath := widget.NewEntry()
+	unpackOutputPath := widget.NewEntry()
+	unpackPassword := widget.NewPasswordEntry()
 	status := widget.NewMultiLineEntry()
 	w := a.NewWindow("ziplock : โปรแกรมบีบอัดไฟล์")
 	w.Resize(fyne.NewSize(760, 520))
 	w.SetIcon(icon)
 
-	inputPath.SetPlaceHolder("เลือกไฟล์ต้นทาง")
-	outputPath.SetPlaceHolder("กำหนดไฟล์ปลายทาง")
-	password.SetPlaceHolder("ใส่รหัสผ่าน")
+	packInputPath.SetPlaceHolder("เลือกไฟล์หรือโฟลเดอร์ต้นทาง")
+	packOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง หรือไฟล์ .myz")
+	packPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ pack")
+	unpackInputPath.SetPlaceHolder("เลือกไฟล์ .myz")
+	unpackOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
+	unpackPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ unpack")
 	status.SetText("พร้อมใช้งาน")
 	status.Disable()
 
@@ -84,20 +91,28 @@ func runGUI() {
 		})
 	}
 
-	browseInput := widget.NewButton("เลือกไฟล์", func() {
-		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
-			if err != nil || r == nil {
+	browsePackInput := widget.NewButton("เลือกต้นทาง", func() {
+		dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
+			if err == nil && lu != nil {
+				runOnUI(func() {
+					packInputPath.SetText(lu.Path())
+				})
 				return
 			}
-			path := r.URI().Path()
-			_ = r.Close()
-			runOnUI(func() {
-				inputPath.SetText(path)
-			})
+			dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
+				if err != nil || r == nil {
+					return
+				}
+				path := r.URI().Path()
+				_ = r.Close()
+				runOnUI(func() {
+					packInputPath.SetText(path)
+				})
+			}, w)
 		}, w)
 	})
 
-	browseOutput := widget.NewButton("เลือกปลายทาง", func() {
+	browsePackOutput := widget.NewButton("เลือกปลายทาง", func() {
 		dialog.ShowFileSave(func(wc fyne.URIWriteCloser, err error) {
 			if err != nil || wc == nil {
 				return
@@ -105,20 +120,51 @@ func runGUI() {
 			path := wc.URI().Path()
 			_ = wc.Close()
 			runOnUI(func() {
-				outputPath.SetText(path)
+				packOutputPath.SetText(path)
+			})
+		}, w)
+	})
+
+	browseUnpackInput := widget.NewButton("เลือกไฟล์ .myz", func() {
+		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err != nil || r == nil {
+				return
+			}
+			path := r.URI().Path()
+			_ = r.Close()
+			runOnUI(func() {
+				unpackInputPath.SetText(path)
+			})
+		}, w)
+	})
+
+	browseUnpackOutput := widget.NewButton("เลือกโฟลเดอร์", func() {
+		dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
+			if err != nil || lu == nil {
+				return
+			}
+			path := lu.Path()
+			runOnUI(func() {
+				unpackOutputPath.SetText(path)
 			})
 		}, w)
 	})
 
 	packBtn := widget.NewButton("Pack", func() {
-		input := inputPath.Text
-		output := outputPath.Text
-		pass := password.Text
+		input := packInputPath.Text
+		output := packOutputPath.Text
+		pass := packPassword.Text
 		if input == "" || output == "" || pass == "" {
 			runOnUI(func() {
 				dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
 			})
 			return
+		}
+		if info, err := os.Stat(input); err == nil && !info.IsDir() && filepath.Ext(output) == "" {
+			output += ".myz"
+			runOnUI(func() {
+				packOutputPath.SetText(output)
+			})
 		}
 		appendStatus("กำลัง pack...")
 		go func() {
@@ -136,12 +182,18 @@ func runGUI() {
 	})
 
 	unpackBtn := widget.NewButton("Unpack", func() {
-		input := inputPath.Text
-		output := outputPath.Text
-		pass := password.Text
+		input := unpackInputPath.Text
+		output := unpackOutputPath.Text
+		pass := unpackPassword.Text
 		if input == "" || output == "" || pass == "" {
 			runOnUI(func() {
 				dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+			})
+			return
+		}
+		if info, err := os.Stat(output); err == nil && !info.IsDir() {
+			runOnUI(func() {
+				dialog.ShowInformation("ziplock", "Unpack ต้องเลือกโฟลเดอร์ปลายทาง", w)
 			})
 			return
 		}
@@ -161,13 +213,27 @@ func runGUI() {
 	})
 
 	platformNote := widget.NewLabel("Desktop app สำหรับ " + runtime.GOOS)
+	packSection := container.NewVBox(
+		widget.NewLabel("Pack Archive"),
+		container.NewBorder(nil, nil, nil, browsePackInput, packInputPath),
+		container.NewBorder(nil, nil, nil, browsePackOutput, packOutputPath),
+		packPassword,
+		packBtn,
+	)
+
+	unpackSection := container.NewVBox(
+		widget.NewLabel("Unpack Archive"),
+		container.NewBorder(nil, nil, nil, browseUnpackInput, unpackInputPath),
+		container.NewBorder(nil, nil, nil, browseUnpackOutput, unpackOutputPath),
+		unpackPassword,
+		unpackBtn,
+	)
+
 	form := container.NewVBox(
 		widget.NewLabel("ziplock"),
 		platformNote,
-		container.NewBorder(nil, nil, nil, browseInput, inputPath),
-		container.NewBorder(nil, nil, nil, browseOutput, outputPath),
-		password,
-		container.NewHBox(packBtn, unpackBtn),
+		packSection,
+		unpackSection,
 		widget.NewLabel("สถานะ"),
 		status,
 	)

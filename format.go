@@ -17,21 +17,29 @@ import (
 var (
 	magicV1 = []byte("MYZ1")
 	magicV2 = []byte("MYZ2")
+	magicV3 = []byte("MYZ3")
 )
 
-type EncHeader struct {
-	Salt  [16]byte
-	Nonce [12]byte
-}
-
-type Header struct {
+type ArchiveHeader struct {
 	Version    uint8
 	Flags      uint8
 	Reserved   uint16
 	ChunkSize  uint32
-	FileSize   uint64
-	ChunkCount uint32
+	EntryCount uint32
 	Salt       [16]byte
+}
+
+const (
+	entryTypeFile = 1
+	entryTypeDir  = 2
+)
+
+type EntryHeader struct {
+	Type             uint8
+	Reserved         [3]byte
+	PathLen          uint32
+	UncompressedSize uint64
+	ChunkCount       uint32
 }
 
 type ChunkHeader struct {
@@ -45,7 +53,8 @@ const (
 	formatVersionV1 = 1
 	formatVersionV2 = 2
 	formatVersionV3 = 3
-	headerSizeV3    = 1 + 1 + 2 + 4 + 8 + 4 + 16
+	headerSizeV3    = 1 + 1 + 2 + 4 + 4 + 16
+	entryHeaderSize = 1 + 3 + 4 + 8 + 4
 	chunkHeaderSize  = 4 + 4 + 4 + 12
 )
 
@@ -58,8 +67,8 @@ func writeMagic(w io.Writer, magic []byte) error {
 	return nil
 }
 
-func writeHeader(w io.Writer, h Header) error {
-	if err := writeMagic(w, magicV2); err != nil {
+func writeHeader(w io.Writer, h ArchiveHeader) error {
+	if err := writeMagic(w, magicV3); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.LittleEndian, h); err != nil {
@@ -68,15 +77,27 @@ func writeHeader(w io.Writer, h Header) error {
 	return nil
 }
 
-func readHeader(r io.Reader) (*Header, error) {
+func readHeader(r io.Reader) (*ArchiveHeader, error) {
 	buf := make([]byte, 4)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	if string(buf) != string(magicV2) && string(buf) != string(magicV1) {
+	if string(buf) != string(magicV3) && string(buf) != string(magicV2) && string(buf) != string(magicV1) {
 		return nil, errBadMagic
 	}
-	var h Header
+	var h ArchiveHeader
+	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func writeEntryHeader(w io.Writer, h EntryHeader) error {
+	return binary.Write(w, binary.LittleEndian, h)
+}
+
+func readEntryHeader(r io.Reader) (*EntryHeader, error) {
+	var h EntryHeader
 	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
 		return nil, err
 	}
@@ -95,14 +116,13 @@ func readChunkHeader(r io.Reader) (*ChunkHeader, error) {
 	return &h, nil
 }
 
-func makeArchiveHeader(version uint8, chunkSize uint32, fileSize uint64, chunkCount uint32, salt [16]byte) Header {
-	return Header{
+func makeArchiveHeader(version uint8, chunkSize uint32, entryCount uint32, salt [16]byte) ArchiveHeader {
+	return ArchiveHeader{
 		Version:    version,
 		Flags:      0,
 		Reserved:   0,
 		ChunkSize:  chunkSize,
-		FileSize:   fileSize,
-		ChunkCount: chunkCount,
+		EntryCount: entryCount,
 		Salt:       salt,
 	}
 }

@@ -8,34 +8,35 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
-	"sync"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/klauspost/compress/zstd"
 )
 
-type Job struct {
-	index int
-	data  []byte
-}
-
-type Result struct {
-	index int
-	data  []byte
-	orig  int
-	nonce [12]byte
+type archiveEntry struct {
+	relPath string
+	absPath string
+	isDir   bool
+	size    uint64
 }
 
 const chunkSize = 1 << 20 // 1MB
-const workerCount = 4
-const pipelineDepth = workerCount * 2
 
 func pack(input, output, password string) error {
-	in, err := os.Open(input)
+	entries, rootName, err := collectEntries(input)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+
+	if info, err := os.Stat(output); err == nil && info.IsDir() {
+		base := filepath.Base(filepath.Clean(input))
+		if base == "." || base == string(filepath.Separator) {
+			base = "archive"
+		}
+		output = filepath.Join(output, base+".myz")
+	}
 
 	out, err := os.Create(output)
 	if err != nil {
@@ -43,127 +44,189 @@ func pack(input, output, password string) error {
 	}
 	defer out.Close()
 
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-
-	fileSize := uint64(info.Size())
-	chunkCount := uint32((fileSize + chunkSize - 1) / chunkSize)
-
 	var salt [16]byte
 	if _, err := rand.Read(salt[:]); err != nil {
 		return err
 	}
 
-	header := makeArchiveHeader(formatVersionV2, chunkSize, fileSize, chunkCount, salt)
+	header := makeArchiveHeader(formatVersionV3, chunkSize, uint32(len(entries)), salt)
 	if err := writeHeader(out, header); err != nil {
 		return err
 	}
 
 	key := deriveKey(password, salt[:])
 
-	jobs := make(chan Job, pipelineDepth)
-	results := make(chan Result, pipelineDepth)
-	var wg sync.WaitGroup
-
-	workerTotal := workerCount
-	if cpu := runtime.NumCPU(); cpu > 0 && cpu < workerTotal {
-		workerTotal = cpu
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		return err
 	}
-	if workerTotal < 1 {
-		workerTotal = 1
-	}
+	defer encoder.Close()
 
-	for w := 0; w < workerTotal; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			encoder, err := zstd.NewWriter(nil)
-			if err != nil {
-				return
-			}
-			defer encoder.Close()
-
-			for job := range jobs {
-				comp := encoder.EncodeAll(job.data, nil)
-				var nonce [12]byte
-				if _, err := rand.Read(nonce[:]); err != nil {
-					continue
-				}
-				enc, err := encrypt(comp, key, nonce[:])
-				if err != nil {
-					continue
-				}
-				results <- Result{index: job.index, data: enc, orig: len(job.data), nonce: nonce}
-			}
-		}()
+	totalFiles := int64(0)
+	for _, entry := range entries {
+		if !entry.isDir {
+			totalFiles += int64(entry.size)
+		}
 	}
 
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
+	var written int64
 	buf := make([]byte, chunkSize)
-	i := 0
-	for {
-		n, err := in.Read(buf)
-		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			jobs <- Job{i, data}
-			i++
+
+	for _, entry := range entries {
+		path := entry.relPath
+		if rootName != "" {
+			path = filepath.ToSlash(filepath.Join(rootName, entry.relPath))
 		}
-		if err == io.EOF {
-			break
+
+		encodedPath := []byte(path)
+		entryHeader := EntryHeader{
+			Type:             entryTypeDir,
+			PathLen:          uint32(len(encodedPath)),
+			UncompressedSize: 0,
+			ChunkCount:       0,
 		}
-		if err != nil {
-			close(jobs)
+		if !entry.isDir {
+			entryHeader.Type = entryTypeFile
+			entryHeader.UncompressedSize = entry.size
+			entryHeader.ChunkCount = uint32((entry.size + chunkSize - 1) / chunkSize)
+		}
+
+		if err := writeEntryHeader(out, entryHeader); err != nil {
 			return err
 		}
-	}
-	close(jobs)
+		if _, err := out.Write(encodedPath); err != nil {
+			return err
+		}
 
-	// writer (ordered)
-	expected := 0
-	cache := map[int]Result{}
+		if entry.isDir {
+			continue
+		}
 
-	totalWritten := int64(0)
+		file, err := os.Open(entry.absPath)
+		if err != nil {
+			return err
+		}
 
-	for res := range results {
-		cache[res.index] = res
+		for chunkIndex := uint32(0); chunkIndex < entryHeader.ChunkCount; chunkIndex++ {
+			n, readErr := io.ReadFull(file, buf)
+			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+				if n == 0 {
+					break
+				}
+				readErr = nil
+			}
+			if readErr != nil {
+				file.Close()
+				return readErr
+			}
 
-		for {
-			r, ok := cache[expected]
-			if !ok {
-				break
+			chunkData := make([]byte, n)
+			copy(chunkData, buf[:n])
+
+			comp := encoder.EncodeAll(chunkData, nil)
+			var nonce [12]byte
+			if _, err := rand.Read(nonce[:]); err != nil {
+				file.Close()
+				return err
+			}
+			enc, err := encrypt(comp, key, nonce[:])
+			if err != nil {
+				file.Close()
+				return err
 			}
 
 			chunkHeader := ChunkHeader{
-				Index:    uint32(expected),
-				OrigSize: uint32(r.orig),
-				CompSize: uint32(len(r.data)),
-				Nonce:    r.nonce,
+				Index:    chunkIndex,
+				OrigSize: uint32(len(chunkData)),
+				CompSize: uint32(len(enc)),
+				Nonce:    nonce,
 			}
 			if err := writeChunkHeader(out, chunkHeader); err != nil {
+				file.Close()
 				return err
 			}
-			if _, err := out.Write(r.data); err != nil {
+			if _, err := out.Write(enc); err != nil {
+				file.Close()
 				return err
 			}
 
-			totalWritten += int64(r.orig)
-			fmt.Printf("\rProgress: %.2f%%",
-				float64(totalWritten)/float64(fileSize)*100)
-
-			delete(cache, expected)
-			expected++
+			written += int64(len(chunkData))
+			fmt.Printf("\rProgress: %.2f%%", float64(written)/float64(totalFiles)*100)
 		}
 
+		file.Close()
 	}
 
 	fmt.Println("\nDone")
 	return nil
+}
+
+func collectEntries(input string) ([]archiveEntry, string, error) {
+	info, err := os.Stat(input)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if !info.IsDir() {
+		return []archiveEntry{{
+			relPath: filepath.Base(input),
+			absPath: input,
+			isDir:   false,
+			size:    uint64(info.Size()),
+		}}, "", nil
+	}
+
+	rootName := filepath.Base(filepath.Clean(input))
+	var entries []archiveEntry
+
+	err = filepath.WalkDir(input, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == input {
+			return nil
+		}
+		rel, err := filepath.Rel(input, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			entries = append(entries, archiveEntry{
+				relPath: rel,
+				absPath: path,
+				isDir:   true,
+			})
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		entries = append(entries, archiveEntry{
+			relPath: rel,
+			absPath: path,
+			isDir:   false,
+			size:    uint64(info.Size()),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].isDir != entries[j].isDir {
+			return entries[i].isDir
+		}
+		return strings.Compare(entries[i].relPath, entries[j].relPath) < 0
+	})
+
+	entries = append([]archiveEntry{{
+		relPath: "",
+		absPath: input,
+		isDir:   true,
+	}}, entries...)
+
+	return entries, rootName, nil
 }
