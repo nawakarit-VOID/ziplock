@@ -5,7 +5,6 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -22,39 +21,49 @@ type Result struct {
 	index int
 	data  []byte
 	orig  int
+	nonce [12]byte
 }
 
 const chunkSize = 1 << 20 // 1MB
 
 func pack(input, output, password string) error {
-	in, _ := os.Open(input)
+	in, err := os.Open(input)
+	if err != nil {
+		return err
+	}
 	defer in.Close()
 
-	out, _ := os.Create(output)
+	out, err := os.Create(output)
+	if err != nil {
+		return err
+	}
 	defer out.Close()
 
-	info, _ := in.Stat()
-
-	header := Header{
-		Version:   2,
-		ChunkSize: chunkSize,
-		FileSize:  uint64(info.Size()),
+	info, err := in.Stat()
+	if err != nil {
+		return err
 	}
 
-	writeHeader(out, header)
+	fileSize := uint64(info.Size())
+	chunkCount := uint32((fileSize + chunkSize - 1) / chunkSize)
 
-	// 🔐 generate salt + nonce
 	var salt [16]byte
-	var nonce [12]byte
-	rand.Read(salt[:])
-	rand.Read(nonce[:])
+	if _, err := rand.Read(salt[:]); err != nil {
+		return err
+	}
 
-	encHeader := EncHeader{Salt: salt, Nonce: nonce}
-	binary.Write(out, binary.LittleEndian, encHeader)
+	header := makeArchiveHeader(formatVersionV2, chunkSize, fileSize, chunkCount, salt)
+	if err := writeHeader(out, header); err != nil {
+		return err
+	}
 
 	key := deriveKey(password, salt[:])
 
-	encoder, _ := zstd.NewWriter(nil)
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		return err
+	}
+	defer encoder.Close()
 
 	jobs := make(chan Job, 4)
 	results := make(chan Result, 4)
@@ -64,8 +73,10 @@ func pack(input, output, password string) error {
 		go func() {
 			for job := range jobs {
 				comp := encoder.EncodeAll(job.data, nil)
+				var nonce [12]byte
+				_, _ = rand.Read(nonce[:])
 				enc, _ := encrypt(comp, key, nonce[:])
-				results <- Result{job.index, enc, len(job.data)}
+				results <- Result{index: job.index, data: enc, orig: len(job.data), nonce: nonce}
 			}
 		}()
 	}
@@ -104,19 +115,28 @@ func pack(input, output, password string) error {
 				break
 			}
 
-			binary.Write(out, binary.LittleEndian, uint32(len(r.data)))
-			binary.Write(out, binary.LittleEndian, uint32(r.orig))
-			out.Write(r.data)
+			chunkHeader := ChunkHeader{
+				Index:    uint32(expected),
+				OrigSize: uint32(r.orig),
+				CompSize: uint32(len(r.data)),
+				Nonce:    r.nonce,
+			}
+			if err := writeChunkHeader(out, chunkHeader); err != nil {
+				return err
+			}
+			if _, err := out.Write(r.data); err != nil {
+				return err
+			}
 
 			totalWritten += int64(r.orig)
 			fmt.Printf("\rProgress: %.2f%%",
-				float64(totalWritten)/float64(info.Size())*100)
+				float64(totalWritten)/float64(fileSize)*100)
 
 			delete(cache, expected)
 			expected++
 		}
 
-		if totalWritten >= info.Size() {
+		if totalWritten >= int64(fileSize) {
 			break
 		}
 	}

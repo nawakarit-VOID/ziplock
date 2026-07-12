@@ -4,7 +4,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -13,38 +12,53 @@ import (
 )
 
 func unpack(input, output, password string) error {
-	in, _ := os.Open(input)
+	in, err := os.Open(input)
+	if err != nil {
+		return err
+	}
 	defer in.Close()
 
-	out, _ := os.Create(output)
+	out, err := os.Create(output)
+	if err != nil {
+		return err
+	}
 	defer out.Close()
 
-	_, _ = readHeader(in)
+	header, err := readHeader(in)
+	if err != nil {
+		return err
+	}
+	key := deriveKey(password, header.Salt[:])
 
-	var encHeader EncHeader
-	binary.Read(in, binary.LittleEndian, &encHeader)
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return err
+	}
+	defer decoder.Close()
 
-	key := deriveKey(password, encHeader.Salt[:])
-
-	decoder, _ := zstd.NewReader(nil)
-
-	for {
-		var size uint32
-		err := binary.Read(in, binary.LittleEndian, &size)
-		if err == io.EOF {
-			break
+	for i := uint32(0); i < header.ChunkCount; i++ {
+		chunkHeader, err := readChunkHeader(in)
+		if err != nil {
+			return err
 		}
-
-		var orig uint32
-		binary.Read(in, binary.LittleEndian, &orig)
-
-		buf := make([]byte, size)
-		io.ReadFull(in, buf)
-
-		dec, _ := decrypt(buf, key, encHeader.Nonce[:])
-		data, _ := decoder.DecodeAll(dec, nil)
-
-		out.Write(data)
+		buf := make([]byte, chunkHeader.CompSize)
+		if _, err := io.ReadFull(in, buf); err != nil {
+			return err
+		}
+		dec, err := decrypt(buf, key, chunkHeader.Nonce[:])
+		if err != nil {
+			return err
+		}
+		data, err := decoder.DecodeAll(dec, nil)
+		if err != nil {
+			return err
+		}
+		if uint32(len(data)) != chunkHeader.OrigSize {
+			return fmt.Errorf("chunk %d size mismatch: got %d want %d", chunkHeader.Index, len(data), chunkHeader.OrigSize)
+		}
+		if _, err := out.Write(data); err != nil {
+			return err
+		}
 	}
 
 	fmt.Println("Unpacked")
