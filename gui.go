@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Nawakarit
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License v3.0.
 package main
 
 import (
@@ -47,32 +50,38 @@ var iconFS embed.FS
 var fontItim []byte
 var myFont = fyne.NewStaticResource("Itim-Regular.ttf", fontItim)
 
+func runOnUI(fn func()) {
+	fyne.Do(fn)
+}
+
 func runGUI() {
 	a := app.NewWithID("com.nawakarit.ziplock")
 	a.Settings().SetTheme(&MyTheme{})
 	icon := loadIcon(64)
 	a.SetIcon(icon)
 
+	inputPath := widget.NewEntry()
+	outputPath := widget.NewEntry()
+	password := widget.NewPasswordEntry()
+	status := widget.NewMultiLineEntry()
 	w := a.NewWindow("ziplock : โปรแกรมบีบอัดไฟล์")
 	w.Resize(fyne.NewSize(760, 520))
 	w.SetIcon(icon)
 
-	inputPath := widget.NewEntry()
 	inputPath.SetPlaceHolder("เลือกไฟล์ต้นทาง")
-	outputPath := widget.NewEntry()
 	outputPath.SetPlaceHolder("กำหนดไฟล์ปลายทาง")
-	password := widget.NewPasswordEntry()
 	password.SetPlaceHolder("ใส่รหัสผ่าน")
-	status := widget.NewMultiLineEntry()
 	status.SetText("พร้อมใช้งาน")
 	status.Disable()
 
 	appendStatus := func(msg string) {
-		if current := status.Text; current == "" {
-			status.SetText(msg)
-		} else {
-			status.SetText(current + "\n" + msg)
-		}
+		runOnUI(func() {
+			if current := status.Text; current == "" {
+				status.SetText(msg)
+			} else {
+				status.SetText(current + "\n" + msg)
+			}
+		})
 	}
 
 	browseInput := widget.NewButton("เลือกไฟล์", func() {
@@ -80,8 +89,11 @@ func runGUI() {
 			if err != nil || r == nil {
 				return
 			}
-			inputPath.SetText(r.URI().Path())
+			path := r.URI().Path()
 			_ = r.Close()
+			runOnUI(func() {
+				inputPath.SetText(path)
+			})
 		}, w)
 	})
 
@@ -90,20 +102,28 @@ func runGUI() {
 			if err != nil || wc == nil {
 				return
 			}
-			outputPath.SetText(wc.URI().Path())
+			path := wc.URI().Path()
 			_ = wc.Close()
+			runOnUI(func() {
+				outputPath.SetText(path)
+			})
 		}, w)
 	})
 
 	packBtn := widget.NewButton("Pack", func() {
-		if inputPath.Text == "" || outputPath.Text == "" || password.Text == "" {
-			dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+		input := inputPath.Text
+		output := outputPath.Text
+		pass := password.Text
+		if input == "" || output == "" || pass == "" {
+			runOnUI(func() {
+				dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+			})
 			return
 		}
 		appendStatus("กำลัง pack...")
 		go func() {
-			err := pack(inputPath.Text, outputPath.Text, password.Text)
-			fyne.Do(func() {
+			err := pack(input, output, pass)
+			runOnUI(func() {
 				if err != nil {
 					appendStatus("Error: " + err.Error())
 					dialog.ShowError(err, w)
@@ -116,14 +136,19 @@ func runGUI() {
 	})
 
 	unpackBtn := widget.NewButton("Unpack", func() {
-		if inputPath.Text == "" || outputPath.Text == "" || password.Text == "" {
-			dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+		input := inputPath.Text
+		output := outputPath.Text
+		pass := password.Text
+		if input == "" || output == "" || pass == "" {
+			runOnUI(func() {
+				dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+			})
 			return
 		}
 		appendStatus("กำลัง unpack...")
 		go func() {
-			err := unpack(inputPath.Text, outputPath.Text, password.Text)
-			fyne.Do(func() {
+			err := unpack(input, output, pass)
+			runOnUI(func() {
 				if err != nil {
 					appendStatus("Error: " + err.Error())
 					dialog.ShowError(err, w)
@@ -136,7 +161,6 @@ func runGUI() {
 	})
 
 	platformNote := widget.NewLabel("Desktop app สำหรับ " + runtime.GOOS)
-
 	form := container.NewVBox(
 		widget.NewLabel("ziplock"),
 		platformNote,
