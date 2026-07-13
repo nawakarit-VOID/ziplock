@@ -27,7 +27,7 @@ func unpack(input, output, password string) error {
 		return err
 	}
 
-	key := deriveKey(password, header.Salt[:])
+	key := deriveKey(header.Version, password, header.Salt[:])
 
 	decoder, err := zstd.NewReader(nil)
 	if err != nil {
@@ -46,7 +46,7 @@ func unpack(input, output, password string) error {
 		var entryHeader EntryHeader
 		var pathBytes []byte
 
-		if header.Version == formatVersionV4 {
+		if header.Version >= formatVersionV4 {
 			var nonce [12]byte
 			if _, err := io.ReadFull(in, nonce[:]); err != nil {
 				return err

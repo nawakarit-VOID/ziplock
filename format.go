@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -19,6 +20,7 @@ var (
 	magicV2 = []byte("MYZ2")
 	magicV3 = []byte("MYZ3")
 	magicV4 = []byte("MYZ4")
+	magicV5 = []byte("MYZ5")
 )
 
 type ArchiveHeader struct {
@@ -55,6 +57,7 @@ const (
 	formatVersionV2 = 2
 	formatVersionV3 = 3
 	formatVersionV4 = 4
+	formatVersionV5 = 5
 	headerSizeV3    = 1 + 1 + 2 + 4 + 4 + 16
 	entryHeaderSize = 1 + 3 + 4 + 8 + 4
 	chunkHeaderSize  = 4 + 4 + 4 + 12
@@ -70,7 +73,11 @@ func writeMagic(w io.Writer, magic []byte) error {
 }
 
 func writeHeader(w io.Writer, h ArchiveHeader) error {
-	if h.Version == formatVersionV4 {
+	if h.Version == formatVersionV5 {
+		if err := writeMagic(w, magicV5); err != nil {
+			return err
+		}
+	} else if h.Version == formatVersionV4 {
 		if err := writeMagic(w, magicV4); err != nil {
 			return err
 		}
@@ -90,7 +97,7 @@ func readHeader(r io.Reader) (*ArchiveHeader, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	if string(buf) != string(magicV4) && string(buf) != string(magicV3) && string(buf) != string(magicV2) && string(buf) != string(magicV1) {
+	if string(buf) != string(magicV5) && string(buf) != string(magicV4) && string(buf) != string(magicV3) && string(buf) != string(magicV2) && string(buf) != string(magicV1) {
 		return nil, errBadMagic
 	}
 	var h ArchiveHeader
@@ -136,7 +143,10 @@ func makeArchiveHeader(version uint8, chunkSize uint32, entryCount uint32, salt 
 }
 
 // deriveKey creates the archive key from password and salt.
-func deriveKey(password string, salt []byte) []byte {
+func deriveKey(version uint8, password string, salt []byte) []byte {
+	if version >= formatVersionV5 {
+		return argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
+	}
 	return pbkdf2.Key([]byte(password), salt, 100000, 32, sha256.New)
 }
 
