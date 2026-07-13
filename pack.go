@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -49,7 +51,7 @@ func pack(input, output, password string) error {
 		return err
 	}
 
-	header := makeArchiveHeader(formatVersionV3, chunkSize, uint32(len(entries)), salt)
+	header := makeArchiveHeader(formatVersionV4, chunkSize, uint32(len(entries)), salt)
 	if err := writeHeader(out, header); err != nil {
 		return err
 	}
@@ -91,10 +93,32 @@ func pack(input, output, password string) error {
 			entryHeader.ChunkCount = uint32((entry.size + chunkSize - 1) / chunkSize)
 		}
 
-		if err := writeEntryHeader(out, entryHeader); err != nil {
+		var headerBuf bytes.Buffer
+		if err := binary.Write(&headerBuf, binary.LittleEndian, entryHeader); err != nil {
 			return err
 		}
-		if _, err := out.Write(encodedPath); err != nil {
+		if _, err := headerBuf.Write(encodedPath); err != nil {
+			return err
+		}
+
+		var nonce [12]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return err
+		}
+
+		enc, err := encrypt(headerBuf.Bytes(), key, nonce[:])
+		if err != nil {
+			return err
+		}
+
+		if _, err := out.Write(nonce[:]); err != nil {
+			return err
+		}
+		cipherSize := uint32(len(enc))
+		if err := binary.Write(out, binary.LittleEndian, cipherSize); err != nil {
+			return err
+		}
+		if _, err := out.Write(enc); err != nil {
 			return err
 		}
 

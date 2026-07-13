@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -41,14 +43,51 @@ func unpack(input, output, password string) error {
 	}
 
 	for i := uint32(0); i < header.EntryCount; i++ {
-		entryHeader, err := readEntryHeader(in)
-		if err != nil {
-			return err
-		}
+		var entryHeader EntryHeader
+		var pathBytes []byte
 
-		pathBytes := make([]byte, entryHeader.PathLen)
-		if _, err := io.ReadFull(in, pathBytes); err != nil {
-			return err
+		if header.Version == formatVersionV4 {
+			var nonce [12]byte
+			if _, err := io.ReadFull(in, nonce[:]); err != nil {
+				return err
+			}
+			var cipherSize uint32
+			if err := binary.Read(in, binary.LittleEndian, &cipherSize); err != nil {
+				return err
+			}
+			enc := make([]byte, cipherSize)
+			if _, err := io.ReadFull(in, enc); err != nil {
+				return err
+			}
+
+			dec, err := decrypt(enc, key, nonce[:])
+			if err != nil {
+				return err
+			}
+
+			if len(dec) < entryHeaderSize {
+				return fmt.Errorf("decrypted metadata too short")
+			}
+
+			decBuf := bytes.NewReader(dec)
+			if err := binary.Read(decBuf, binary.LittleEndian, &entryHeader); err != nil {
+				return err
+			}
+			pathBytes = make([]byte, entryHeader.PathLen)
+			if _, err := io.ReadFull(decBuf, pathBytes); err != nil {
+				return err
+			}
+		} else {
+			eh, err := readEntryHeader(in)
+			if err != nil {
+				return err
+			}
+			entryHeader = *eh
+
+			pathBytes = make([]byte, entryHeader.PathLen)
+			if _, err := io.ReadFull(in, pathBytes); err != nil {
+				return err
+			}
 		}
 
 		relPath := sanitizeArchivePath(string(pathBytes))

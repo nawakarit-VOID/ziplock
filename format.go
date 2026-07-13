@@ -18,6 +18,7 @@ var (
 	magicV1 = []byte("MYZ1")
 	magicV2 = []byte("MYZ2")
 	magicV3 = []byte("MYZ3")
+	magicV4 = []byte("MYZ4")
 )
 
 type ArchiveHeader struct {
@@ -53,6 +54,7 @@ const (
 	formatVersionV1 = 1
 	formatVersionV2 = 2
 	formatVersionV3 = 3
+	formatVersionV4 = 4
 	headerSizeV3    = 1 + 1 + 2 + 4 + 4 + 16
 	entryHeaderSize = 1 + 3 + 4 + 8 + 4
 	chunkHeaderSize  = 4 + 4 + 4 + 12
@@ -68,8 +70,14 @@ func writeMagic(w io.Writer, magic []byte) error {
 }
 
 func writeHeader(w io.Writer, h ArchiveHeader) error {
-	if err := writeMagic(w, magicV3); err != nil {
-		return err
+	if h.Version == formatVersionV4 {
+		if err := writeMagic(w, magicV4); err != nil {
+			return err
+		}
+	} else {
+		if err := writeMagic(w, magicV3); err != nil {
+			return err
+		}
 	}
 	if err := binary.Write(w, binary.LittleEndian, h); err != nil {
 		return err
@@ -82,7 +90,7 @@ func readHeader(r io.Reader) (*ArchiveHeader, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	if string(buf) != string(magicV3) && string(buf) != string(magicV2) && string(buf) != string(magicV1) {
+	if string(buf) != string(magicV4) && string(buf) != string(magicV3) && string(buf) != string(magicV2) && string(buf) != string(magicV1) {
 		return nil, errBadMagic
 	}
 	var h ArchiveHeader
