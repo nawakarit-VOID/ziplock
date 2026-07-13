@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -55,6 +55,19 @@ func runOnUI(fn func()) {
 	fyne.Do(fn)
 }
 
+func autoPackOutputName(inputPath string) string {
+	if inputPath == "" {
+		return ""
+	}
+	info, err := os.Stat(inputPath)
+	if err == nil && info.IsDir() {
+		return filepath.Join(filepath.Dir(inputPath), filepath.Base(filepath.Clean(inputPath))+".ziplock")
+	}
+	base := filepath.Base(inputPath)
+	ext := filepath.Ext(base)
+	return filepath.Join(filepath.Dir(inputPath), strings.TrimSuffix(base, ext)+".ziplock")
+}
+
 func runGUI() {
 	a := app.NewWithID("com.nawakarit.ziplock")
 	a.Settings().SetTheme(&MyTheme{})
@@ -73,9 +86,9 @@ func runGUI() {
 	w.SetIcon(icon)
 
 	packInputPath.SetPlaceHolder("เลือกไฟล์หรือโฟลเดอร์ต้นทาง")
-	packOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง หรือไฟล์ .myz")
+	packOutputPath.SetPlaceHolder("ปลายทาง .ziplock จะถูกตั้งชื่ออัตโนมัติ")
 	packPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ pack")
-	unpackInputPath.SetPlaceHolder("เลือกไฟล์ .myz")
+	unpackInputPath.SetPlaceHolder("เลือกไฟล์ .ziplock")
 	unpackOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
 	unpackPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ unpack")
 	status.SetText("พร้อมใช้งาน")
@@ -94,8 +107,10 @@ func runGUI() {
 	browsePackInput := widget.NewButton("เลือกต้นทาง", func() {
 		dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
 			if err == nil && lu != nil {
+				path := lu.Path()
 				runOnUI(func() {
-					packInputPath.SetText(lu.Path())
+					packInputPath.SetText(path)
+					packOutputPath.SetText(autoPackOutputName(path))
 				})
 				return
 			}
@@ -107,6 +122,7 @@ func runGUI() {
 				_ = r.Close()
 				runOnUI(func() {
 					packInputPath.SetText(path)
+					packOutputPath.SetText(autoPackOutputName(path))
 				})
 			}, w)
 		}, w)
@@ -125,7 +141,7 @@ func runGUI() {
 		}, w)
 	})
 
-	browseUnpackInput := widget.NewButton("เลือกไฟล์ .myz", func() {
+	browseUnpackInput := widget.NewButton("เลือกไฟล์ .ziplock", func() {
 		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
 			if err != nil || r == nil {
 				return
@@ -160,8 +176,8 @@ func runGUI() {
 			})
 			return
 		}
-		if info, err := os.Stat(input); err == nil && !info.IsDir() && filepath.Ext(output) == "" {
-			output += ".myz"
+		if filepath.Ext(output) == "" {
+			output = autoPackOutputName(input)
 			runOnUI(func() {
 				packOutputPath.SetText(output)
 			})
@@ -212,7 +228,7 @@ func runGUI() {
 		}()
 	})
 
-	platformNote := widget.NewLabel("Desktop app สำหรับ " + runtime.GOOS)
+	//platformNote := widget.NewLabel("Desktop app สำหรับ " + runtime.GOOS)
 	packSection := container.NewVBox(
 		widget.NewLabel("Pack Archive"),
 		container.NewBorder(nil, nil, nil, browsePackInput, packInputPath),
@@ -230,8 +246,8 @@ func runGUI() {
 	)
 
 	form := container.NewVBox(
-		widget.NewLabel("ziplock"),
-		platformNote,
+		//widget.NewLabel("ziplock"),
+		//platformNote,
 		packSection,
 		unpackSection,
 		widget.NewLabel("สถานะ"),

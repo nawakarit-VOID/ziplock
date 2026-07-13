@@ -10,7 +10,7 @@ import (
 
 // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 // # Main #
-// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+// = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 func main() {
 
@@ -22,8 +22,8 @@ func main() {
 	if len(os.Args) < 5 {
 		fmt.Println("Usage:")
 		fmt.Println("  ziplock gui")
-		fmt.Println("  ziplock pack input output.myz password")
-		fmt.Println("  ziplock unpack input.myz output password")
+		fmt.Println("  ziplock pack input output.ziplock password")
+		fmt.Println("  ziplock unpack input.ziplock output password")
 		return
 	}
 

@@ -35,7 +35,7 @@ func pack(input, output, password string) error {
 		if base == "." || base == string(filepath.Separator) {
 			base = "archive"
 		}
-		output = filepath.Join(output, base+".myz")
+		output = filepath.Join(output, base+".ziplock")
 	}
 
 	out, err := os.Create(output)
