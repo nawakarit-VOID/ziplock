@@ -71,11 +71,10 @@ func pack(input, output, password string) error {
 	}
 
 	header := makeArchiveHeader(formatVersionV5, chunkSize, uint32(len(entries)), salt)
-	if err := writeHeader(out, header); err != nil {
+	key := deriveKey(formatVersionV5, password, salt[:])
+	if err := writeHeader(out, header, key); err != nil {
 		return err
 	}
-
-	key := deriveKey(formatVersionV5, password, salt[:])
 
 	encoder, err := zstd.NewWriter(nil)
 	if err != nil {

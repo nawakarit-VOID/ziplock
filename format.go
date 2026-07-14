@@ -4,8 +4,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -72,12 +74,64 @@ func writeMagic(w io.Writer, magic []byte) error {
 	return nil
 }
 
-func writeHeader(w io.Writer, h ArchiveHeader) error {
+func makeHeaderAAD(magic []byte, salt []byte) []byte {
+	aad := make([]byte, len(magic)+len(salt))
+	copy(aad, magic)
+	copy(aad[len(magic):], salt)
+	return aad
+}
+
+func writeHeader(w io.Writer, h ArchiveHeader, key []byte) error {
 	if h.Version == formatVersionV5 {
 		if err := writeMagic(w, magicV5); err != nil {
 			return err
 		}
-	} else if h.Version == formatVersionV4 {
+		if _, err := w.Write(h.Salt[:]); err != nil {
+			return err
+		}
+
+		var body bytes.Buffer
+		if err := binary.Write(&body, binary.LittleEndian, h.Version); err != nil {
+			return err
+		}
+		if err := binary.Write(&body, binary.LittleEndian, h.Flags); err != nil {
+			return err
+		}
+		if err := binary.Write(&body, binary.LittleEndian, h.Reserved); err != nil {
+			return err
+		}
+		if err := binary.Write(&body, binary.LittleEndian, h.ChunkSize); err != nil {
+			return err
+		}
+		if err := binary.Write(&body, binary.LittleEndian, h.EntryCount); err != nil {
+			return err
+		}
+
+		var nonce [12]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return err
+		}
+		if _, err := w.Write(nonce[:]); err != nil {
+			return err
+		}
+
+		aad := makeHeaderAAD(magicV5, h.Salt[:])
+		enc, err := encrypt(body.Bytes(), key, nonce[:], aad)
+		if err != nil {
+			return err
+		}
+
+		cipherSize := uint32(len(enc))
+		if err := binary.Write(w, binary.LittleEndian, cipherSize); err != nil {
+			return err
+		}
+		if _, err := w.Write(enc); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if h.Version == formatVersionV4 {
 		if err := writeMagic(w, magicV4); err != nil {
 			return err
 		}
@@ -92,14 +146,76 @@ func writeHeader(w io.Writer, h ArchiveHeader) error {
 	return nil
 }
 
-func readHeader(r io.Reader) (*ArchiveHeader, error) {
+func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	buf := make([]byte, 4)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	if string(buf) != string(magicV5) && string(buf) != string(magicV4) && string(buf) != string(magicV3) && string(buf) != string(magicV2) && string(buf) != string(magicV1) {
+	magic := string(buf)
+	if magic != string(magicV5) && magic != string(magicV4) && magic != string(magicV3) && magic != string(magicV2) && magic != string(magicV1) {
 		return nil, errBadMagic
 	}
+
+	if magic == string(magicV5) {
+		var salt [16]byte
+		if _, err := io.ReadFull(r, salt[:]); err != nil {
+			return nil, err
+		}
+
+		key := deriveKey(formatVersionV5, password, salt[:])
+
+		var nonce [12]byte
+		if _, err := io.ReadFull(r, nonce[:]); err != nil {
+			return nil, err
+		}
+
+		var cipherSize uint32
+		if err := binary.Read(r, binary.LittleEndian, &cipherSize); err != nil {
+			return nil, err
+		}
+		if cipherSize == 0 || cipherSize > 1024 {
+			return nil, errors.New("invalid archive header cipher size")
+		}
+
+		enc := make([]byte, cipherSize)
+		if _, err := io.ReadFull(r, enc); err != nil {
+			return nil, err
+		}
+
+		aad := makeHeaderAAD(magicV5, salt[:])
+		dec, err := decrypt(enc, key, nonce[:], aad)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(dec) != 1+1+2+4+4 {
+			return nil, errors.New("invalid decrypted archive header size")
+		}
+
+		var h ArchiveHeader
+		decBuf := bytes.NewReader(dec)
+		if err := binary.Read(decBuf, binary.LittleEndian, &h.Version); err != nil {
+			return nil, err
+		}
+		if h.Version != formatVersionV5 {
+			return nil, errors.New("invalid archive version in encrypted header")
+		}
+		if err := binary.Read(decBuf, binary.LittleEndian, &h.Flags); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(decBuf, binary.LittleEndian, &h.Reserved); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(decBuf, binary.LittleEndian, &h.ChunkSize); err != nil {
+			return nil, err
+		}
+		if err := binary.Read(decBuf, binary.LittleEndian, &h.EntryCount); err != nil {
+			return nil, err
+		}
+		h.Salt = salt
+		return &h, nil
+	}
+
 	var h ArchiveHeader
 	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
 		return nil, err

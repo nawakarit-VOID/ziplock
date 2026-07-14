@@ -22,7 +22,7 @@ func unpack(input, output, password string) error {
 	}
 	defer in.Close()
 
-	header, err := readHeader(in)
+	header, err := readHeader(in, password)
 	if err != nil {
 		return err
 	}
