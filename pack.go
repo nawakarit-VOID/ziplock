@@ -26,6 +26,14 @@ type archiveEntry struct {
 
 const chunkSize = 1 << 20 // 1MB
 
+const (
+	MaxEntryCount = 1_000_000
+	MaxPathLen    = 4096
+	MinChunkSize  = 1024
+	MaxChunkSize  = 16 * 1024 * 1024         // 16MB
+	MaxFileSize   = 100 * 1024 * 1024 * 1024 // 100GB
+)
+
 func pack(input, output, password string) error {
 	entries, rootName, err := collectEntries(input)
 	if err != nil {
@@ -51,6 +59,17 @@ func pack(input, output, password string) error {
 		return err
 	}
 
+	// Header sanity checks
+	if formatVersionV5 < formatVersionV1 || formatVersionV5 > formatVersionV5 {
+		return fmt.Errorf("invalid archive version: %d", formatVersionV5)
+	}
+	if chunkSize < MinChunkSize || chunkSize > MaxChunkSize {
+		return fmt.Errorf("invalid chunk size: %d", chunkSize)
+	}
+	if uint64(len(entries)) > MaxEntryCount {
+		return fmt.Errorf("entry count exceeds limit: %d", len(entries))
+	}
+
 	header := makeArchiveHeader(formatVersionV5, chunkSize, uint32(len(entries)), salt)
 	if err := writeHeader(out, header); err != nil {
 		return err
@@ -74,7 +93,7 @@ func pack(input, output, password string) error {
 	var written int64
 	buf := make([]byte, chunkSize)
 
-	for _, entry := range entries {
+	for entryIndex, entry := range entries {
 		path := entry.relPath
 		if rootName != "" {
 			path = filepath.ToSlash(filepath.Join(rootName, entry.relPath))
@@ -93,6 +112,24 @@ func pack(input, output, password string) error {
 			entryHeader.ChunkCount = uint32((entry.size + chunkSize - 1) / chunkSize)
 		}
 
+		// Entry sanity checks
+		if entryHeader.Type != entryTypeFile && entryHeader.Type != entryTypeDir {
+			return fmt.Errorf("invalid entry type: %d", entryHeader.Type)
+		}
+		if entryHeader.PathLen > MaxPathLen {
+			return fmt.Errorf("entry path length too long: %d", entryHeader.PathLen)
+		}
+		if entryHeader.UncompressedSize > MaxFileSize {
+			return fmt.Errorf("entry size too large: %d", entryHeader.UncompressedSize)
+		}
+		expectedChunks := uint64(0)
+		if entryHeader.UncompressedSize > 0 {
+			expectedChunks = (entryHeader.UncompressedSize + uint64(chunkSize) - 1) / uint64(chunkSize)
+		}
+		if entryHeader.ChunkCount != uint32(expectedChunks) {
+			return fmt.Errorf("chunk count mismatch: got %d, expected %d", entryHeader.ChunkCount, expectedChunks)
+		}
+
 		var headerBuf bytes.Buffer
 		if err := binary.Write(&headerBuf, binary.LittleEndian, entryHeader); err != nil {
 			return err
@@ -106,7 +143,11 @@ func pack(input, output, password string) error {
 			return err
 		}
 
-		enc, err := encrypt(headerBuf.Bytes(), key, nonce[:])
+		var metadataAAD bytes.Buffer
+		_ = binary.Write(&metadataAAD, binary.LittleEndian, uint32(entryIndex))
+		_, _ = metadataAAD.Write(salt[:])
+
+		enc, err := encrypt(headerBuf.Bytes(), key, nonce[:], metadataAAD.Bytes())
 		if err != nil {
 			return err
 		}
@@ -153,7 +194,16 @@ func pack(input, output, password string) error {
 				file.Close()
 				return err
 			}
-			enc, err := encrypt(comp, key, nonce[:])
+
+			compSize := uint32(len(comp) + 16)
+			var chunkAAD bytes.Buffer
+			_ = binary.Write(&chunkAAD, binary.LittleEndian, uint32(entryIndex))
+			_ = binary.Write(&chunkAAD, binary.LittleEndian, chunkIndex)
+			_ = binary.Write(&chunkAAD, binary.LittleEndian, uint32(len(chunkData)))
+			_ = binary.Write(&chunkAAD, binary.LittleEndian, compSize)
+			_, _ = chunkAAD.Write(salt[:])
+
+			enc, err := encrypt(comp, key, nonce[:], chunkAAD.Bytes())
 			if err != nil {
 				file.Close()
 				return err
@@ -165,6 +215,19 @@ func pack(input, output, password string) error {
 				CompSize: uint32(len(enc)),
 				Nonce:    nonce,
 			}
+			// Chunk sanity checks
+			if chunkHeader.Index != chunkIndex {
+				return fmt.Errorf("chunk index mismatch: got %d, expected %d", chunkHeader.Index, chunkIndex)
+			}
+			if chunkHeader.OrigSize > uint32(chunkSize) {
+				return fmt.Errorf("chunk original size exceeds chunk size: %d > %d", chunkHeader.OrigSize, chunkSize)
+			}
+			// Allow some overhead for encryption (16 bytes) and possible compression overhead
+			maxAllowed := chunkHeader.OrigSize + 16 + 4096
+			if chunkHeader.CompSize > maxAllowed {
+				return fmt.Errorf("chunk compressed size too large: %d > %d", chunkHeader.CompSize, maxAllowed)
+			}
+
 			if err := writeChunkHeader(out, chunkHeader); err != nil {
 				file.Close()
 				return err

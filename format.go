@@ -60,7 +60,7 @@ const (
 	formatVersionV5 = 5
 	headerSizeV3    = 1 + 1 + 2 + 4 + 4 + 16
 	entryHeaderSize = 1 + 3 + 4 + 8 + 4
-	chunkHeaderSize  = 4 + 4 + 4 + 12
+	chunkHeaderSize = 4 + 4 + 4 + 12
 )
 
 var errBadMagic = errors.New("invalid archive magic")
@@ -158,18 +158,34 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-func encrypt(data, key, nonce []byte) ([]byte, error) {
+func encrypt(data, key, nonce, aad []byte) ([]byte, error) {
 	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err
 	}
-	return aead.Seal(nil, nonce, data, nil), nil
+	return aead.Seal(nil, nonce, data, aad), nil
 }
 
-func decrypt(data, key, nonce []byte) ([]byte, error) {
+func decrypt(data, key, nonce, aad []byte) ([]byte, error) {
 	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err
 	}
-	return aead.Open(nil, nonce, data, nil)
+	return aead.Open(nil, nonce, data, aad)
+}
+
+func encryptWithAAD(data, key, nonce, aad []byte) ([]byte, error) {
+	aead, err := newAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Seal(nil, nonce, data, aad), nil
+}
+
+func decryptWithAAD(data, key, nonce, aad []byte) ([]byte, error) {
+	aead, err := newAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Open(nil, nonce, data, aad)
 }

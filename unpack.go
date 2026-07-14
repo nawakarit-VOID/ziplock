@@ -27,6 +27,17 @@ func unpack(input, output, password string) error {
 		return err
 	}
 
+	// ArchiveHeader Sanity Checks
+	if header.Version < 1 || header.Version > 5 {
+		return fmt.Errorf("invalid archive version: %d", header.Version)
+	}
+	if header.ChunkSize < 1024 || header.ChunkSize > 16*1024*1024 {
+		return fmt.Errorf("invalid archive chunk size: %d bytes (must be between 1KB and 16MB)", header.ChunkSize)
+	}
+	if header.EntryCount > 1000000 {
+		return fmt.Errorf("archive entry count exceeds hard limit: %d", header.EntryCount)
+	}
+
 	key := deriveKey(header.Version, password, header.Salt[:])
 
 	decoder, err := zstd.NewReader(nil)
@@ -60,7 +71,15 @@ func unpack(input, output, password string) error {
 				return err
 			}
 
-			dec, err := decrypt(enc, key, nonce[:])
+			var metadataAAD []byte
+			if header.Version >= formatVersionV5 {
+				var metadataAADBuf bytes.Buffer
+				_ = binary.Write(&metadataAADBuf, binary.LittleEndian, uint32(i))
+				_, _ = metadataAADBuf.Write(header.Salt[:])
+				metadataAAD = metadataAADBuf.Bytes()
+			}
+
+			dec, err := decrypt(enc, key, nonce[:], metadataAAD)
 			if err != nil {
 				return err
 			}
@@ -87,6 +106,33 @@ func unpack(input, output, password string) error {
 			pathBytes = make([]byte, entryHeader.PathLen)
 			if _, err := io.ReadFull(in, pathBytes); err != nil {
 				return err
+			}
+		}
+
+		// EntryHeader Sanity Checks
+		if entryHeader.Type != entryTypeFile && entryHeader.Type != entryTypeDir {
+			return fmt.Errorf("invalid entry type: %d", entryHeader.Type)
+		}
+		if entryHeader.PathLen == 0 || entryHeader.PathLen > 4096 {
+			return fmt.Errorf("invalid entry path length: %d bytes (must be between 1 and 4096 bytes)", entryHeader.PathLen)
+		}
+		if entryHeader.Type == entryTypeDir {
+			if entryHeader.UncompressedSize != 0 {
+				return fmt.Errorf("directory entry cannot have non-zero size: %d", entryHeader.UncompressedSize)
+			}
+			if entryHeader.ChunkCount != 0 {
+				return fmt.Errorf("directory entry cannot have non-zero chunk count: %d", entryHeader.ChunkCount)
+			}
+		} else {
+			if entryHeader.UncompressedSize > 100*1024*1024*1024*1024 { // 100TB
+				return fmt.Errorf("file size exceeds limit: %d", entryHeader.UncompressedSize)
+			}
+			expectedChunks := uint32(0)
+			if entryHeader.UncompressedSize > 0 {
+				expectedChunks = uint32((entryHeader.UncompressedSize + uint64(header.ChunkSize) - 1) / uint64(header.ChunkSize))
+			}
+			if entryHeader.ChunkCount != expectedChunks {
+				return fmt.Errorf("invalid chunk count: got %d want %d", entryHeader.ChunkCount, expectedChunks)
 			}
 		}
 
@@ -120,13 +166,39 @@ func unpack(input, output, password string) error {
 				return err
 			}
 
+			// ChunkHeader Sanity Checks
+			if chunkHeader.Index != chunkIndex {
+				out.Close()
+				return fmt.Errorf("invalid chunk index: got %d want %d", chunkHeader.Index, chunkIndex)
+			}
+			if chunkHeader.OrigSize > header.ChunkSize {
+				out.Close()
+				return fmt.Errorf("chunk original size %d exceeds archive chunk size %d", chunkHeader.OrigSize, header.ChunkSize)
+			}
+			maxCompSize := chunkHeader.OrigSize*2 + 65536
+			if chunkHeader.CompSize > maxCompSize {
+				out.Close()
+				return fmt.Errorf("chunk compressed size %d exceeds hard limit %d", chunkHeader.CompSize, maxCompSize)
+			}
+
 			buf := make([]byte, chunkHeader.CompSize)
 			if _, err := io.ReadFull(in, buf); err != nil {
 				out.Close()
 				return err
 			}
 
-			dec, err := decrypt(buf, key, chunkHeader.Nonce[:])
+			var chunkAAD []byte
+			if header.Version >= formatVersionV5 {
+				var chunkAADBuf bytes.Buffer
+				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, uint32(i))
+				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.Index)
+				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.OrigSize)
+				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.CompSize)
+				_, _ = chunkAADBuf.Write(header.Salt[:])
+				chunkAAD = chunkAADBuf.Bytes()
+			}
+
+			dec, err := decrypt(buf, key, chunkHeader.Nonce[:], chunkAAD)
 			if err != nil {
 				out.Close()
 				return err
