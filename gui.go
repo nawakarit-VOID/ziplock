@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -68,6 +69,7 @@ func autoPackOutputName(inputPath string) string {
 	return filepath.Join(filepath.Dir(inputPath), strings.TrimSuffix(base, ext)+".ziplock")
 }
 
+/*
 func runGUI() {
 	a := app.NewWithID("com.nawakarit.ziplock")
 	a.Settings().SetTheme(&MyTheme{})
@@ -255,5 +257,246 @@ func runGUI() {
 	)
 
 	w.SetContent(container.NewPadded(form))
+	w.ShowAndRun()
+}
+*/
+// NOTE: เพิ่ม import เหล่านี้ที่ยังไม่มีในไฟล์เดิม
+//   "fyne.io/fyne/v2/theme"
+// ส่วน pack(), unpack(), loadIcon(), runOnUI(), MyTheme, autoPackOutputName()
+// ใช้ของเดิมที่มีอยู่แล้วในโปรเจกต์ ไม่ต้องแก้ไข
+
+func runGUI() {
+	a := app.NewWithID("com.nawakarit.ziplock")
+	a.Settings().SetTheme(&MyTheme{})
+	icon := loadIcon(64)
+	a.SetIcon(icon)
+
+	w := a.NewWindow("ziplock : โปรแกรมบีบอัดไฟล์")
+	w.Resize(fyne.NewSize(820, 640))
+	w.SetIcon(icon)
+
+	// ---------- inputs ----------
+	packInputPath := widget.NewEntry()
+	packOutputPath := widget.NewEntry()
+	packPassword := widget.NewPasswordEntry()
+	unpackInputPath := widget.NewEntry()
+	unpackOutputPath := widget.NewEntry()
+	unpackPassword := widget.NewPasswordEntry()
+
+	packInputPath.SetPlaceHolder("เลือกไฟล์หรือโฟลเดอร์ต้นทาง")
+	packOutputPath.SetPlaceHolder("ปลายทาง .ziplock จะถูกตั้งชื่ออัตโนมัติ")
+	packPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ pack")
+	unpackInputPath.SetPlaceHolder("เลือกไฟล์ .ziplock")
+	unpackOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
+	unpackPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ unpack")
+
+	// ---------- status + progress ----------
+	status := widget.NewMultiLineEntry()
+	status.Wrapping = fyne.TextWrapWord
+	status.SetText("พร้อมใช้งาน")
+	status.Disable()
+
+	progress := widget.NewProgressBarInfinite()
+	progress.Hide()
+
+	appendStatus := func(msg string) {
+		runOnUI(func() {
+			if current := status.Text; current == "" {
+				status.SetText(msg)
+			} else {
+				status.SetText(current + "\n" + msg)
+			}
+		})
+	}
+
+	var packBtn, unpackBtn *widget.Button
+	setBusy := func(busy bool) {
+		runOnUI(func() {
+			if busy {
+				progress.Show()
+				packBtn.Disable()
+				unpackBtn.Disable()
+			} else {
+				progress.Hide()
+				packBtn.Enable()
+				unpackBtn.Enable()
+			}
+		})
+	}
+
+	// ---------- browse buttons ----------
+	browsePackInput := widget.NewButtonWithIcon("เลือกต้นทาง", theme.FolderOpenIcon(), func() {
+		dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
+			if err == nil && lu != nil {
+				path := lu.Path()
+				runOnUI(func() {
+					packInputPath.SetText(path)
+					packOutputPath.SetText(autoPackOutputName(path))
+				})
+				return
+			}
+			dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
+				if err != nil || r == nil {
+					return
+				}
+				path := r.URI().Path()
+				_ = r.Close()
+				runOnUI(func() {
+					packInputPath.SetText(path)
+					packOutputPath.SetText(autoPackOutputName(path))
+				})
+			}, w)
+		}, w)
+	})
+
+	browsePackOutput := widget.NewButtonWithIcon("เลือกปลายทาง", theme.DocumentSaveIcon(), func() {
+		dialog.ShowFileSave(func(wc fyne.URIWriteCloser, err error) {
+			if err != nil || wc == nil {
+				return
+			}
+			path := wc.URI().Path()
+			_ = wc.Close()
+			runOnUI(func() {
+				packOutputPath.SetText(path)
+			})
+		}, w)
+	})
+
+	browseUnpackInput := widget.NewButtonWithIcon("เลือกไฟล์ .ziplock", theme.FileIcon(), func() {
+		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err != nil || r == nil {
+				return
+			}
+			path := r.URI().Path()
+			_ = r.Close()
+			runOnUI(func() {
+				unpackInputPath.SetText(path)
+			})
+		}, w)
+	})
+
+	browseUnpackOutput := widget.NewButtonWithIcon("เลือกโฟลเดอร์", theme.FolderOpenIcon(), func() {
+		dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
+			if err != nil || lu == nil {
+				return
+			}
+			path := lu.Path()
+			runOnUI(func() {
+				unpackOutputPath.SetText(path)
+			})
+		}, w)
+	})
+
+	// ---------- main actions ----------
+	packBtn = widget.NewButtonWithIcon("Pack", theme.UploadIcon(), func() {
+		input := packInputPath.Text
+		output := packOutputPath.Text
+		pass := packPassword.Text
+		if input == "" || output == "" || pass == "" {
+			dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+			return
+		}
+		if filepath.Ext(output) == "" {
+			output = autoPackOutputName(input)
+			runOnUI(func() { packOutputPath.SetText(output) })
+		}
+		appendStatus("กำลัง pack...")
+		setBusy(true)
+		go func() {
+			err := pack(input, output, pass)
+			setBusy(false)
+			runOnUI(func() {
+				if err != nil {
+					appendStatus("Error: " + err.Error())
+					dialog.ShowError(err, w)
+					return
+				}
+				appendStatus("Pack สำเร็จ")
+				dialog.ShowInformation("ziplock", "Pack สำเร็จ", w)
+			})
+		}()
+	})
+	packBtn.Importance = widget.HighImportance
+
+	unpackBtn = widget.NewButtonWithIcon("Unpack", theme.DownloadIcon(), func() {
+		input := unpackInputPath.Text
+		output := unpackOutputPath.Text
+		pass := unpackPassword.Text
+		if input == "" || output == "" || pass == "" {
+			dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
+			return
+		}
+		if info, err := os.Stat(output); err == nil && !info.IsDir() {
+			dialog.ShowInformation("ziplock", "Unpack ต้องเลือกโฟลเดอร์ปลายทาง", w)
+			return
+		}
+		appendStatus("กำลัง unpack...")
+		setBusy(true)
+		go func() {
+			err := unpack(input, output, pass)
+			setBusy(false)
+			runOnUI(func() {
+				if err != nil {
+					appendStatus("Error: " + err.Error())
+					dialog.ShowError(err, w)
+					return
+				}
+				appendStatus("Unpack สำเร็จ")
+				dialog.ShowInformation("ziplock", "Unpack สำเร็จ", w)
+			})
+		}()
+	})
+	unpackBtn.Importance = widget.HighImportance
+
+	// ---------- layout helpers ----------
+	field := func(label string, entry *widget.Entry, browse *widget.Button) *fyne.Container {
+		return container.NewVBox(
+			widget.NewLabelWithStyle(label, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			container.NewBorder(nil, nil, nil, browse, entry),
+		)
+	}
+
+	packCard := widget.NewCard("📦 Pack Archive", "บีบอัดและเข้ารหัสไฟล์หรือโฟลเดอร์ที่เลือก",
+		container.NewVBox(
+			field("ต้นทาง", packInputPath, browsePackInput),
+			field("ปลายทาง", packOutputPath, browsePackOutput),
+			widget.NewLabelWithStyle("รหัสผ่าน", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			packPassword,
+			widget.NewSeparator(),
+			container.NewCenter(packBtn),
+		),
+	)
+
+	unpackCard := widget.NewCard("📂 Unpack Archive", "ถอดรหัสและแตกไฟล์ .ziplock",
+		container.NewVBox(
+			field("ไฟล์ .ziplock", unpackInputPath, browseUnpackInput),
+			field("ปลายทาง", unpackOutputPath, browseUnpackOutput),
+			widget.NewLabelWithStyle("รหัสผ่าน", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			unpackPassword,
+			widget.NewSeparator(),
+			container.NewCenter(unpackBtn),
+		),
+	)
+
+	tabs := container.NewAppTabs(
+		container.NewTabItemWithIcon("Pack", theme.UploadIcon(), container.NewPadded(packCard)),
+		container.NewTabItemWithIcon("Unpack", theme.DownloadIcon(), container.NewPadded(unpackCard)),
+	)
+	tabs.SetTabLocation(container.TabLocationTop)
+
+	statusCard := widget.NewCard("สถานะการทำงาน", "", container.NewVBox(progress, status))
+
+	title := widget.NewRichTextFromMarkdown("## 🔒 ziplock — โปรแกรมบีบอัดและเข้ารหัสไฟล์")
+
+	split := container.NewVSplit(tabs, statusCard)
+	split.SetOffset(0.72) // ให้พื้นที่ tabs เยอะกว่า status
+
+	content := container.NewBorder(
+		container.NewVBox(title, widget.NewSeparator()),
+		nil, nil, nil,
+		split,
+	)
+
+	w.SetContent(container.NewPadded(content))
 	w.ShowAndRun()
 }
