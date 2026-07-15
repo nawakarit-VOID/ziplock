@@ -56,17 +56,30 @@ func runOnUI(fn func()) {
 	fyne.Do(fn)
 }
 
-func autoPackOutputName(inputPath string) string {
+// autoPackFileName returns just the filename (no directory) for the output .ziplock
+func autoPackFileName(inputPath string) string {
 	if inputPath == "" {
 		return ""
 	}
 	info, err := os.Stat(inputPath)
 	if err == nil && info.IsDir() {
-		return filepath.Join(filepath.Dir(inputPath), filepath.Base(filepath.Clean(inputPath))+".ziplock")
+		return filepath.Base(filepath.Clean(inputPath)) + ".ziplock"
 	}
 	base := filepath.Base(inputPath)
 	ext := filepath.Ext(base)
-	return filepath.Join(filepath.Dir(inputPath), strings.TrimSuffix(base, ext)+".ziplock")
+	return strings.TrimSuffix(base, ext) + ".ziplock"
+}
+
+// autoPackOutputDir returns the directory of the input path as the default output dir
+func autoPackOutputDir(inputPath string) string {
+	if inputPath == "" {
+		return ""
+	}
+	info, err := os.Stat(inputPath)
+	if err == nil && info.IsDir() {
+		return filepath.Dir(filepath.Clean(inputPath))
+	}
+	return filepath.Dir(inputPath)
 }
 
 /*
@@ -277,14 +290,16 @@ func runGUI() {
 
 	// ---------- inputs ----------
 	packInputPath := widget.NewEntry()
-	packOutputPath := widget.NewEntry()
+	packOutputDir := widget.NewEntry()  // โฟลเดอร์ปลายทาง
+	packOutputName := widget.NewEntry() // ชื่อไฟล์
 	packPassword := widget.NewPasswordEntry()
 	unpackInputPath := widget.NewEntry()
 	unpackOutputPath := widget.NewEntry()
 	unpackPassword := widget.NewPasswordEntry()
 
 	packInputPath.SetPlaceHolder("เลือกไฟล์หรือโฟลเดอร์ต้นทาง")
-	packOutputPath.SetPlaceHolder("ปลายทาง .ziplock จะถูกตั้งชื่ออัตโนมัติ")
+	packOutputDir.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
+	packOutputName.SetPlaceHolder("ชื่อไฟล์ .ziplock (ตั้งอัตโนมัติ แก้ไขได้)")
 	packPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ pack")
 	unpackInputPath.SetPlaceHolder("เลือกไฟล์ .ziplock")
 	unpackOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
@@ -331,7 +346,11 @@ func runGUI() {
 				path := lu.Path()
 				runOnUI(func() {
 					packInputPath.SetText(path)
-					packOutputPath.SetText(autoPackOutputName(path))
+					// ตั้งชื่อไฟล์อัตโนมัติ แต่เฉพาะถ้าผู้ใช้ยังไม่ได้แก้ไข
+					if packOutputDir.Text == "" {
+						packOutputDir.SetText(autoPackOutputDir(path))
+					}
+					packOutputName.SetText(autoPackFileName(path))
 				})
 				return
 			}
@@ -343,21 +362,24 @@ func runGUI() {
 				_ = r.Close()
 				runOnUI(func() {
 					packInputPath.SetText(path)
-					packOutputPath.SetText(autoPackOutputName(path))
+					if packOutputDir.Text == "" {
+						packOutputDir.SetText(autoPackOutputDir(path))
+					}
+					packOutputName.SetText(autoPackFileName(path))
 				})
 			}, w)
 		}, w)
 	})
 
-	browsePackOutput := widget.NewButtonWithIcon("เลือกปลายทาง", theme.DocumentSaveIcon(), func() {
-		dialog.ShowFileSave(func(wc fyne.URIWriteCloser, err error) {
-			if err != nil || wc == nil {
+	// เลือกโฟลเดอร์ปลายทาง (ไม่สร้างไฟล์ใดๆ)
+	browsePackOutputDir := widget.NewButtonWithIcon("เลือกโฟลเดอร์", theme.FolderOpenIcon(), func() {
+		dialog.ShowFolderOpen(func(lu fyne.ListableURI, err error) {
+			if err != nil || lu == nil {
 				return
 			}
-			path := wc.URI().Path()
-			_ = wc.Close()
+			path := lu.Path()
 			runOnUI(func() {
-				packOutputPath.SetText(path)
+				packOutputDir.SetText(path)
 			})
 		}, w)
 	})
@@ -390,17 +412,35 @@ func runGUI() {
 	// ---------- main actions ----------
 	packBtn = widget.NewButtonWithIcon("Pack", theme.UploadIcon(), func() {
 		input := packInputPath.Text
-		output := packOutputPath.Text
+		outDir := strings.TrimSpace(packOutputDir.Text)
+		outName := strings.TrimSpace(packOutputName.Text)
 		pass := packPassword.Text
-		if input == "" || output == "" || pass == "" {
+
+		if input == "" || pass == "" {
 			dialog.ShowInformation("ziplock", "กรุณากรอกข้อมูลให้ครบ", w)
 			return
 		}
-		if filepath.Ext(output) == "" {
-			output = autoPackOutputName(input)
-			runOnUI(func() { packOutputPath.SetText(output) })
+
+		// ถ้ายังไม่มีชื่อไฟล์ ให้ตั้งชื่ออัตโนมัติ
+		if outName == "" {
+			outName = autoPackFileName(input)
+			runOnUI(func() { packOutputName.SetText(outName) })
 		}
-		appendStatus("กำลัง pack...")
+		// ถ้ายังไม่มีโฟลเดอร์ปลายทาง ให้ใช้โฟลเดอร์เดียวกับต้นทาง
+		if outDir == "" {
+			outDir = autoPackOutputDir(input)
+			runOnUI(func() { packOutputDir.SetText(outDir) })
+		}
+		// ตรวจสอบนามสกุลไฟล์
+		if filepath.Ext(outName) != ".ziplock" {
+			outName = strings.TrimSuffix(outName, filepath.Ext(outName)) + ".ziplock"
+			runOnUI(func() { packOutputName.SetText(outName) })
+		}
+
+		// รวม path ที่แน่นอน
+		output := filepath.Join(outDir, outName)
+
+		appendStatus(fmt.Sprintf("กำลัง pack → %s", output))
 		setBusy(true)
 		go func() {
 			err := pack(input, output, pass)
@@ -411,7 +451,7 @@ func runGUI() {
 					dialog.ShowError(err, w)
 					return
 				}
-				appendStatus("Pack สำเร็จ")
+				appendStatus("Pack สำเร็จ: " + output)
 				dialog.ShowInformation("ziplock", "Pack สำเร็จ", w)
 			})
 		}()
@@ -455,11 +495,18 @@ func runGUI() {
 			container.NewBorder(nil, nil, nil, browse, entry),
 		)
 	}
+	fieldNoBtn := func(label string, entry *widget.Entry) *fyne.Container {
+		return container.NewVBox(
+			widget.NewLabelWithStyle(label, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			entry,
+		)
+	}
 
 	packCard := widget.NewCard("📦 Pack Archive", "บีบอัดและเข้ารหัสไฟล์หรือโฟลเดอร์ที่เลือก",
 		container.NewVBox(
 			field("ต้นทาง", packInputPath, browsePackInput),
-			field("ปลายทาง", packOutputPath, browsePackOutput),
+			field("โฟลเดอร์ปลายทาง", packOutputDir, browsePackOutputDir),
+			fieldNoBtn("ชื่อไฟล์เอาต์พุต", packOutputName),
 			widget.NewLabelWithStyle("รหัสผ่าน", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			packPassword,
 			widget.NewSeparator(),
