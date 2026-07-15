@@ -8,22 +8,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"io"
 
 	"golang.org/x/crypto/argon2"
-	"golang.org/x/crypto/pbkdf2"
 )
 
-var (
-	magicV1 = []byte("MYZ1")
-	magicV2 = []byte("MYZ2")
-	magicV3 = []byte("MYZ3")
-	magicV4 = []byte("MYZ4")
-	magicV5 = []byte("MYZ5")
-)
+var magic = []byte("MYZ5")
 
 type ArchiveHeader struct {
 	Version    uint8
@@ -55,26 +47,22 @@ type ChunkHeader struct {
 }
 
 const (
-	formatVersionV1 = 1
-	formatVersionV2 = 2
-	formatVersionV3 = 3
-	formatVersionV4 = 4
-	formatVersionV5 = 5
-	headerSizeV3    = 1 + 1 + 2 + 4 + 4 + 16
+	formatVersion   = 5
+	headerSizeBody  = 1 + 1 + 2 + 4 + 4 // Version + Flags + Reserved + ChunkSize + EntryCount
 	entryHeaderSize = 1 + 3 + 4 + 8 + 4
 	chunkHeaderSize = 4 + 4 + 4 + 12
 )
 
 var errBadMagic = errors.New("invalid archive magic")
 
-func writeMagic(w io.Writer, magic []byte) error {
+func writeMagic(w io.Writer) error {
 	if _, err := w.Write(magic); err != nil {
 		return err
 	}
 	return nil
 }
 
-func makeHeaderAAD(magic []byte, salt []byte) []byte {
+func makeHeaderAAD(salt []byte) []byte {
 	aad := make([]byte, len(magic)+len(salt))
 	copy(aad, magic)
 	copy(aad[len(magic):], salt)
@@ -82,65 +70,49 @@ func makeHeaderAAD(magic []byte, salt []byte) []byte {
 }
 
 func writeHeader(w io.Writer, h ArchiveHeader, key []byte) error {
-	if h.Version == formatVersionV5 {
-		if err := writeMagic(w, magicV5); err != nil {
-			return err
-		}
-		if _, err := w.Write(h.Salt[:]); err != nil {
-			return err
-		}
-
-		var body bytes.Buffer
-		if err := binary.Write(&body, binary.LittleEndian, h.Version); err != nil {
-			return err
-		}
-		if err := binary.Write(&body, binary.LittleEndian, h.Flags); err != nil {
-			return err
-		}
-		if err := binary.Write(&body, binary.LittleEndian, h.Reserved); err != nil {
-			return err
-		}
-		if err := binary.Write(&body, binary.LittleEndian, h.ChunkSize); err != nil {
-			return err
-		}
-		if err := binary.Write(&body, binary.LittleEndian, h.EntryCount); err != nil {
-			return err
-		}
-
-		var nonce [12]byte
-		if _, err := rand.Read(nonce[:]); err != nil {
-			return err
-		}
-		if _, err := w.Write(nonce[:]); err != nil {
-			return err
-		}
-
-		aad := makeHeaderAAD(magicV5, h.Salt[:])
-		enc, err := encrypt(body.Bytes(), key, nonce[:], aad)
-		if err != nil {
-			return err
-		}
-
-		cipherSize := uint32(len(enc))
-		if err := binary.Write(w, binary.LittleEndian, cipherSize); err != nil {
-			return err
-		}
-		if _, err := w.Write(enc); err != nil {
-			return err
-		}
-		return nil
+	if err := writeMagic(w); err != nil {
+		return err
+	}
+	if _, err := w.Write(h.Salt[:]); err != nil {
+		return err
 	}
 
-	if h.Version == formatVersionV4 {
-		if err := writeMagic(w, magicV4); err != nil {
-			return err
-		}
-	} else {
-		if err := writeMagic(w, magicV3); err != nil {
-			return err
-		}
+	var body bytes.Buffer
+	if err := binary.Write(&body, binary.LittleEndian, h.Version); err != nil {
+		return err
 	}
-	if err := binary.Write(w, binary.LittleEndian, h); err != nil {
+	if err := binary.Write(&body, binary.LittleEndian, h.Flags); err != nil {
+		return err
+	}
+	if err := binary.Write(&body, binary.LittleEndian, h.Reserved); err != nil {
+		return err
+	}
+	if err := binary.Write(&body, binary.LittleEndian, h.ChunkSize); err != nil {
+		return err
+	}
+	if err := binary.Write(&body, binary.LittleEndian, h.EntryCount); err != nil {
+		return err
+	}
+
+	var nonce [12]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	if _, err := w.Write(nonce[:]); err != nil {
+		return err
+	}
+
+	aad := makeHeaderAAD(h.Salt[:])
+	enc, err := encrypt(body.Bytes(), key, nonce[:], aad)
+	if err != nil {
+		return err
+	}
+
+	cipherSize := uint32(len(enc))
+	if err := binary.Write(w, binary.LittleEndian, cipherSize); err != nil {
+		return err
+	}
+	if _, err := w.Write(enc); err != nil {
 		return err
 	}
 	return nil
@@ -151,75 +123,66 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	magic := string(buf)
-	if magic != string(magicV5) && magic != string(magicV4) && magic != string(magicV3) && magic != string(magicV2) && magic != string(magicV1) {
+	if string(buf) != string(magic) {
 		return nil, errBadMagic
 	}
 
-	if magic == string(magicV5) {
-		var salt [16]byte
-		if _, err := io.ReadFull(r, salt[:]); err != nil {
-			return nil, err
-		}
+	var salt [16]byte
+	if _, err := io.ReadFull(r, salt[:]); err != nil {
+		return nil, err
+	}
 
-		key := deriveKey(formatVersionV5, password, salt[:])
+	key := deriveKey(password, salt[:])
 
-		var nonce [12]byte
-		if _, err := io.ReadFull(r, nonce[:]); err != nil {
-			return nil, err
-		}
+	var nonce [12]byte
+	if _, err := io.ReadFull(r, nonce[:]); err != nil {
+		return nil, err
+	}
 
-		var cipherSize uint32
-		if err := binary.Read(r, binary.LittleEndian, &cipherSize); err != nil {
-			return nil, err
-		}
-		if cipherSize == 0 || cipherSize > 1024 {
-			return nil, errors.New("invalid archive header cipher size")
-		}
+	var cipherSize uint32
+	if err := binary.Read(r, binary.LittleEndian, &cipherSize); err != nil {
+		return nil, err
+	}
+	if cipherSize == 0 || cipherSize > 1024 {
+		return nil, errors.New("invalid archive header cipher size")
+	}
 
-		enc := make([]byte, cipherSize)
-		if _, err := io.ReadFull(r, enc); err != nil {
-			return nil, err
-		}
+	enc := make([]byte, cipherSize)
+	if _, err := io.ReadFull(r, enc); err != nil {
+		return nil, err
+	}
 
-		aad := makeHeaderAAD(magicV5, salt[:])
-		dec, err := decrypt(enc, key, nonce[:], aad)
-		if err != nil {
-			return nil, err
-		}
+	aad := makeHeaderAAD(salt[:])
+	dec, err := decrypt(enc, key, nonce[:], aad)
+	if err != nil {
+		return nil, err
+	}
 
-		if len(dec) != 1+1+2+4+4 {
-			return nil, errors.New("invalid decrypted archive header size")
-		}
-
-		var h ArchiveHeader
-		decBuf := bytes.NewReader(dec)
-		if err := binary.Read(decBuf, binary.LittleEndian, &h.Version); err != nil {
-			return nil, err
-		}
-		if h.Version != formatVersionV5 {
-			return nil, errors.New("invalid archive version in encrypted header")
-		}
-		if err := binary.Read(decBuf, binary.LittleEndian, &h.Flags); err != nil {
-			return nil, err
-		}
-		if err := binary.Read(decBuf, binary.LittleEndian, &h.Reserved); err != nil {
-			return nil, err
-		}
-		if err := binary.Read(decBuf, binary.LittleEndian, &h.ChunkSize); err != nil {
-			return nil, err
-		}
-		if err := binary.Read(decBuf, binary.LittleEndian, &h.EntryCount); err != nil {
-			return nil, err
-		}
-		h.Salt = salt
-		return &h, nil
+	if len(dec) != headerSizeBody {
+		return nil, errors.New("invalid decrypted archive header size")
 	}
 
 	var h ArchiveHeader
-	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
+	decBuf := bytes.NewReader(dec)
+	if err := binary.Read(decBuf, binary.LittleEndian, &h.Version); err != nil {
 		return nil, err
 	}
+	if h.Version != formatVersion {
+		return nil, errors.New("invalid archive version in encrypted header")
+	}
+	if err := binary.Read(decBuf, binary.LittleEndian, &h.Flags); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(decBuf, binary.LittleEndian, &h.Reserved); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(decBuf, binary.LittleEndian, &h.ChunkSize); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(decBuf, binary.LittleEndian, &h.EntryCount); err != nil {
+		return nil, err
+	}
+	h.Salt = salt
 	return &h, nil
 }
 
@@ -247,9 +210,9 @@ func readChunkHeader(r io.Reader) (*ChunkHeader, error) {
 	return &h, nil
 }
 
-func makeArchiveHeader(version uint8, chunkSize uint32, entryCount uint32, salt [16]byte) ArchiveHeader {
+func makeArchiveHeader(chunkSize uint32, entryCount uint32, salt [16]byte) ArchiveHeader {
 	return ArchiveHeader{
-		Version:    version,
+		Version:    formatVersion,
 		Flags:      0,
 		Reserved:   0,
 		ChunkSize:  chunkSize,
@@ -258,12 +221,9 @@ func makeArchiveHeader(version uint8, chunkSize uint32, entryCount uint32, salt 
 	}
 }
 
-// deriveKey creates the archive key from password and salt.
-func deriveKey(version uint8, password string, salt []byte) []byte {
-	if version >= formatVersionV5 {
-		return argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
-	}
-	return pbkdf2.Key([]byte(password), salt, 100000, 32, sha256.New)
+// deriveKey creates the archive key from password and salt using Argon2id.
+func deriveKey(password string, salt []byte) []byte {
+	return argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
 }
 
 func newAEAD(key []byte) (cipher.AEAD, error) {
@@ -283,22 +243,6 @@ func encrypt(data, key, nonce, aad []byte) ([]byte, error) {
 }
 
 func decrypt(data, key, nonce, aad []byte) ([]byte, error) {
-	aead, err := newAEAD(key)
-	if err != nil {
-		return nil, err
-	}
-	return aead.Open(nil, nonce, data, aad)
-}
-
-func encryptWithAAD(data, key, nonce, aad []byte) ([]byte, error) {
-	aead, err := newAEAD(key)
-	if err != nil {
-		return nil, err
-	}
-	return aead.Seal(nil, nonce, data, aad), nil
-}
-
-func decryptWithAAD(data, key, nonce, aad []byte) ([]byte, error) {
 	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err

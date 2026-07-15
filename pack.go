@@ -60,14 +60,6 @@ func pack(input, output, password string) error {
 	}
 
 	// Header sanity checks
-	/*
-		if formatVersionV5 < formatVersionV1 || formatVersionV5 > formatVersionV5 {
-			return fmt.Errorf("invalid archive version: %d", formatVersionV5)
-		}
-	*/
-	if formatVersionV5 < formatVersionV1 {
-		return fmt.Errorf("invalid archive version: %d", formatVersionV5)
-	}
 	if chunkSize < MinChunkSize || chunkSize > MaxChunkSize {
 		return fmt.Errorf("invalid chunk size: %d", chunkSize)
 	}
@@ -75,8 +67,8 @@ func pack(input, output, password string) error {
 		return fmt.Errorf("entry count exceeds limit: %d", len(entries))
 	}
 
-	header := makeArchiveHeader(formatVersionV5, chunkSize, uint32(len(entries)), salt)
-	key := deriveKey(formatVersionV5, password, salt[:])
+	header := makeArchiveHeader(chunkSize, uint32(len(entries)), salt)
+	key := deriveKey(password, salt[:])
 	if err := writeHeader(out, header, key); err != nil {
 		return err
 	}

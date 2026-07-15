@@ -28,8 +28,8 @@ func unpack(input, output, password string) error {
 	}
 
 	// ArchiveHeader Sanity Checks
-	if header.Version < 1 || header.Version > 5 {
-		return fmt.Errorf("invalid archive version: %d", header.Version)
+	if header.Version != formatVersion {
+		return fmt.Errorf("unsupported archive version: %d", header.Version)
 	}
 	if header.ChunkSize < 1024 || header.ChunkSize > 16*1024*1024 {
 		return fmt.Errorf("invalid archive chunk size: %d bytes (must be between 1KB and 16MB)", header.ChunkSize)
@@ -38,7 +38,7 @@ func unpack(input, output, password string) error {
 		return fmt.Errorf("archive entry count exceeds hard limit: %d", header.EntryCount)
 	}
 
-	key := deriveKey(header.Version, password, header.Salt[:])
+	key := deriveKey(password, header.Salt[:])
 
 	decoder, err := zstd.NewReader(nil)
 	if err != nil {
@@ -57,56 +57,40 @@ func unpack(input, output, password string) error {
 		var entryHeader EntryHeader
 		var pathBytes []byte
 
-		if header.Version >= formatVersionV4 {
-			var nonce [12]byte
-			if _, err := io.ReadFull(in, nonce[:]); err != nil {
-				return err
-			}
-			var cipherSize uint32
-			if err := binary.Read(in, binary.LittleEndian, &cipherSize); err != nil {
-				return err
-			}
-			enc := make([]byte, cipherSize)
-			if _, err := io.ReadFull(in, enc); err != nil {
-				return err
-			}
+		var nonce [12]byte
+		if _, err := io.ReadFull(in, nonce[:]); err != nil {
+			return err
+		}
+		var cipherSize uint32
+		if err := binary.Read(in, binary.LittleEndian, &cipherSize); err != nil {
+			return err
+		}
+		enc := make([]byte, cipherSize)
+		if _, err := io.ReadFull(in, enc); err != nil {
+			return err
+		}
 
-			var metadataAAD []byte
-			if header.Version >= formatVersionV5 {
-				var metadataAADBuf bytes.Buffer
-				_ = binary.Write(&metadataAADBuf, binary.LittleEndian, uint32(i))
-				_, _ = metadataAADBuf.Write(header.Salt[:])
-				metadataAAD = metadataAADBuf.Bytes()
-			}
+		var metadataAADBuf bytes.Buffer
+		_ = binary.Write(&metadataAADBuf, binary.LittleEndian, uint32(i))
+		_, _ = metadataAADBuf.Write(header.Salt[:])
+		metadataAAD := metadataAADBuf.Bytes()
 
-			dec, err := decrypt(enc, key, nonce[:], metadataAAD)
-			if err != nil {
-				return err
-			}
+		dec, err := decrypt(enc, key, nonce[:], metadataAAD)
+		if err != nil {
+			return err
+		}
 
-			if len(dec) < entryHeaderSize {
-				return fmt.Errorf("decrypted metadata too short")
-			}
+		if len(dec) < entryHeaderSize {
+			return fmt.Errorf("decrypted metadata too short")
+		}
 
-			decBuf := bytes.NewReader(dec)
-			if err := binary.Read(decBuf, binary.LittleEndian, &entryHeader); err != nil {
-				return err
-			}
-			pathBytes = make([]byte, entryHeader.PathLen)
-			if _, err := io.ReadFull(decBuf, pathBytes); err != nil {
-				return err
-			}
-		} else {
-			eh, err := readEntryHeader(in)
-			if err != nil {
-				return err
-			}
-			entryHeader = *eh
-
-			pathBytes = make([]byte, entryHeader.PathLen)
-			if _, err := io.ReadFull(in, pathBytes); err != nil {
-				return err
-			}
+		decBuf := bytes.NewReader(dec)
+		if err := binary.Read(decBuf, binary.LittleEndian, &entryHeader); err != nil {
+			return err
+		}
+		pathBytes = make([]byte, entryHeader.PathLen)
+		if _, err := io.ReadFull(decBuf, pathBytes); err != nil {
+			return err
 		}
 
 		// EntryHeader Sanity Checks
@@ -187,16 +171,13 @@ func unpack(input, output, password string) error {
 				return err
 			}
 
-			var chunkAAD []byte
-			if header.Version >= formatVersionV5 {
-				var chunkAADBuf bytes.Buffer
-				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, uint32(i))
-				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.Index)
-				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.OrigSize)
-				_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.CompSize)
-				_, _ = chunkAADBuf.Write(header.Salt[:])
-				chunkAAD = chunkAADBuf.Bytes()
-			}
+			var chunkAADBuf bytes.Buffer
+			_ = binary.Write(&chunkAADBuf, binary.LittleEndian, uint32(i))
+			_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.Index)
+			_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.OrigSize)
+			_ = binary.Write(&chunkAADBuf, binary.LittleEndian, chunkHeader.CompSize)
+			_, _ = chunkAADBuf.Write(header.Salt[:])
+			chunkAAD := chunkAADBuf.Bytes()
 
 			dec, err := decrypt(buf, key, chunkHeader.Nonce[:], chunkAAD)
 			if err != nil {
@@ -238,7 +219,7 @@ func sanitizeArchivePath(path string) string {
 		return ""
 	}
 	if strings.HasPrefix(path, "../") || strings.Contains(path, "/../") {
-		return ""
+		return "" 
 	}
 	return path
 }
