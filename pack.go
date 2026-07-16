@@ -34,12 +34,30 @@ const (
 	MaxFileSize   = 100 * 1024 * 1024 * 1024 // 100GB
 )
 
+func cleanupOutputFile(out *os.File, outputPath string) {
+	if out != nil {
+		_ = out.Close()
+	}
+	if outputPath != "" {
+		_ = os.Remove(outputPath)
+	}
+}
+
+func cleanupOnSecureRandomError(err error, out *os.File, outputPath, message string) error {
+	if err == nil {
+		return nil
+	}
+	cleanupOutputFile(out, outputPath)
+	return fmt.Errorf("%s: %w", message, err)
+}
+
 func pack(input, output, password string) error {
 	entries, rootName, err := collectEntries(input)
 	if err != nil {
 		return err
 	}
 
+	outputPath := output
 	if info, err := os.Stat(output); err == nil && info.IsDir() {
 		base := filepath.Base(filepath.Clean(input))
 		if base == "." || base == string(filepath.Separator) {
@@ -47,8 +65,9 @@ func pack(input, output, password string) error {
 		}
 		output = filepath.Join(output, base+".ziplock")
 	}
+	outputPath = output
 
-	out, err := os.Create(output)
+	out, err := os.Create(outputPath)
 	if err != nil {
 		return err
 	}
@@ -56,7 +75,7 @@ func pack(input, output, password string) error {
 
 	var salt [16]byte
 	if _, err := rand.Read(salt[:]); err != nil {
-		return err
+		return cleanupOnSecureRandomError(err, out, outputPath, "failed to generate secure random salt")
 	}
 
 	// Header sanity checks
@@ -70,7 +89,8 @@ func pack(input, output, password string) error {
 	header := makeArchiveHeader(chunkSize, uint32(len(entries)), salt)
 	key := deriveKey(password, salt[:])
 	if err := writeHeader(out, header, key); err != nil {
-		return err
+		cleanupOutputFile(out, outputPath)
+		return fmt.Errorf("failed to write archive header: %w", err)
 	}
 
 	encoder, err := zstd.NewWriter(nil)
@@ -136,7 +156,7 @@ func pack(input, output, password string) error {
 
 		var nonce [12]byte
 		if _, err := rand.Read(nonce[:]); err != nil {
-			return err
+			return cleanupOnSecureRandomError(err, out, outputPath, "failed to generate secure random nonce")
 		}
 
 		var metadataAAD bytes.Buffer
@@ -188,7 +208,7 @@ func pack(input, output, password string) error {
 			var nonce [12]byte
 			if _, err := rand.Read(nonce[:]); err != nil {
 				file.Close()
-				return err
+				return cleanupOnSecureRandomError(err, out, outputPath, "failed to generate secure random nonce")
 			}
 
 			compSize := uint32(len(comp) + 16)
