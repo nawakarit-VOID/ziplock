@@ -221,9 +221,18 @@ func makeArchiveHeader(chunkSize uint32, entryCount uint32, salt [16]byte) Archi
 	}
 }
 
+func zeroizeBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 // deriveKey creates the archive key from password and salt using Argon2id.
 func deriveKey(password string, salt []byte) []byte {
-	return argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
+	pwd := []byte(password)
+	key := argon2.IDKey(pwd, salt, 1, 64*1024, 4, 32)
+	zeroizeBytes(pwd)
+	return key
 }
 
 func newAEAD(key []byte) (cipher.AEAD, error) {
