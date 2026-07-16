@@ -15,6 +15,30 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+func parseEntryMetadata(dec []byte) (EntryHeader, []byte, error) {
+	if len(dec) < entryHeaderSize {
+		return EntryHeader{}, nil, fmt.Errorf("decrypted metadata too short")
+	}
+
+	decBuf := bytes.NewReader(dec)
+	var entryHeader EntryHeader
+	if err := binary.Read(decBuf, binary.LittleEndian, &entryHeader); err != nil {
+		return EntryHeader{}, nil, err
+	}
+
+	remaining := decBuf.Len()
+	if int(entryHeader.PathLen) != remaining {
+		return EntryHeader{}, nil, fmt.Errorf("decrypted metadata size mismatch: PathLen=%d but %d bytes remain", entryHeader.PathLen, remaining)
+	}
+
+	pathBytes := make([]byte, entryHeader.PathLen)
+	if _, err := io.ReadFull(decBuf, pathBytes); err != nil {
+		return EntryHeader{}, nil, err
+	}
+
+	return entryHeader, pathBytes, nil
+}
+
 func unpack(input, output, password string) error {
 	in, err := os.Open(input)
 	if err != nil {
@@ -80,16 +104,8 @@ func unpack(input, output, password string) error {
 			return err
 		}
 
-		if len(dec) < entryHeaderSize {
-			return fmt.Errorf("decrypted metadata too short")
-		}
-
-		decBuf := bytes.NewReader(dec)
-		if err := binary.Read(decBuf, binary.LittleEndian, &entryHeader); err != nil {
-			return err
-		}
-		pathBytes = make([]byte, entryHeader.PathLen)
-		if _, err := io.ReadFull(decBuf, pathBytes); err != nil {
+		entryHeader, pathBytes, err = parseEntryMetadata(dec)
+		if err != nil {
 			return err
 		}
 
@@ -219,7 +235,7 @@ func sanitizeArchivePath(path string) string {
 		return ""
 	}
 	if strings.HasPrefix(path, "../") || strings.Contains(path, "/../") {
-		return "" 
+		return ""
 	}
 	return path
 }
