@@ -183,6 +183,14 @@ func pack(input, output, password string) error {
 			continue
 		}
 
+		info, err := os.Stat(entry.absPath)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			continue
+		}
+
 		file, err := os.Open(entry.absPath)
 		if err != nil {
 			return err

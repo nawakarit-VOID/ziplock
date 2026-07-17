@@ -184,6 +184,11 @@ func unpack(input, output, password string) error {
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 			return err
 		}
+		if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
+			if err := os.RemoveAll(targetPath); err != nil {
+				return err
+			}
+		}
 
 		var chunkData bytes.Buffer
 		for chunkIndex := uint32(0); chunkIndex < entryHeader.ChunkCount; chunkIndex++ {
