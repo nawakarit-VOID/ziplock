@@ -19,7 +19,7 @@ const maxTotalChunkMem = 2 << 30 // 2 GiB
 
 func parseEntryMetadata(dec []byte) (EntryHeader, []byte, error) {
 	if len(dec) < entryHeaderSize {
-		return EntryHeader{}, nil, fmt.Errorf("decrypted metadata too short")
+		return EntryHeader{}, nil, archiveCorruptErrorf("decrypted metadata too short: got %d bytes", len(dec))
 	}
 
 	decBuf := bytes.NewReader(dec)
@@ -30,7 +30,7 @@ func parseEntryMetadata(dec []byte) (EntryHeader, []byte, error) {
 
 	remaining := decBuf.Len()
 	if int(entryHeader.PathLen) != remaining {
-		return EntryHeader{}, nil, fmt.Errorf("decrypted metadata size mismatch: PathLen=%d but %d bytes remain", entryHeader.PathLen, remaining)
+		return EntryHeader{}, nil, archiveCorruptErrorf("decrypted metadata size mismatch: PathLen=%d but %d bytes remain", entryHeader.PathLen, remaining)
 	}
 
 	pathBytes := make([]byte, entryHeader.PathLen)
@@ -55,13 +55,13 @@ func unpack(input, output, password string) error {
 
 	// ArchiveHeader Sanity Checks
 	if header.Version != formatVersion {
-		return fmt.Errorf("unsupported archive version: %d", header.Version)
+		return archiveCorruptErrorf("unsupported archive version: %d", header.Version)
 	}
 	if header.ChunkSize < 1024 || header.ChunkSize > 16*1024*1024 {
-		return fmt.Errorf("invalid archive chunk size: %d bytes (must be between 1KB and 16MB)", header.ChunkSize)
+		return archiveCorruptErrorf("invalid archive chunk size: %d bytes", header.ChunkSize)
 	}
 	if header.EntryCount > 1000000 {
-		return fmt.Errorf("archive entry count exceeds hard limit: %d", header.EntryCount)
+		return archiveCorruptErrorf("archive entry count exceeds hard limit: %d", header.EntryCount)
 	}
 
 	key := deriveKey(password, header.Salt[:])
@@ -115,28 +115,28 @@ func unpack(input, output, password string) error {
 
 		// EntryHeader Sanity Checks
 		if entryHeader.Type != entryTypeFile && entryHeader.Type != entryTypeDir {
-			return fmt.Errorf("invalid entry type: %d", entryHeader.Type)
+			return archiveCorruptErrorf("invalid entry type: %d", entryHeader.Type)
 		}
 		if entryHeader.PathLen == 0 || entryHeader.PathLen > 4096 {
-			return fmt.Errorf("invalid entry path length: %d bytes (must be between 1 and 4096 bytes)", entryHeader.PathLen)
+			return archiveCorruptErrorf("invalid entry path length: %d bytes", entryHeader.PathLen)
 		}
 		if entryHeader.Type == entryTypeDir {
 			if entryHeader.UncompressedSize != 0 {
-				return fmt.Errorf("directory entry cannot have non-zero size: %d", entryHeader.UncompressedSize)
+				return archiveCorruptErrorf("directory entry cannot have non-zero size: %d", entryHeader.UncompressedSize)
 			}
 			if entryHeader.ChunkCount != 0 {
-				return fmt.Errorf("directory entry cannot have non-zero chunk count: %d", entryHeader.ChunkCount)
+				return archiveCorruptErrorf("directory entry cannot have non-zero chunk count: %d", entryHeader.ChunkCount)
 			}
 		} else {
 			if entryHeader.UncompressedSize > 100*1024*1024*1024*1024 { // 100TB
-				return fmt.Errorf("file size exceeds limit: %d", entryHeader.UncompressedSize)
+				return archiveCorruptErrorf("file size exceeds limit: %d", entryHeader.UncompressedSize)
 			}
 			expectedChunks := uint32(0)
 			if entryHeader.UncompressedSize > 0 {
 				expectedChunks = uint32((entryHeader.UncompressedSize + uint64(header.ChunkSize) - 1) / uint64(header.ChunkSize))
 			}
 			if entryHeader.ChunkCount != expectedChunks {
-				return fmt.Errorf("invalid chunk count: got %d want %d", entryHeader.ChunkCount, expectedChunks)
+				return archiveCorruptErrorf("invalid chunk count: got %d want %d", entryHeader.ChunkCount, expectedChunks)
 			}
 		}
 
@@ -173,23 +173,23 @@ func unpack(input, output, password string) error {
 			// ChunkHeader Sanity Checks
 			if chunkHeader.Index != chunkIndex {
 				out.Close()
-				return fmt.Errorf("invalid chunk index: got %d want %d", chunkHeader.Index, chunkIndex)
+				return archiveCorruptErrorf("invalid chunk index: got %d want %d", chunkHeader.Index, chunkIndex)
 			}
 			if chunkHeader.OrigSize > header.ChunkSize {
 				out.Close()
-				return fmt.Errorf("chunk original size %d exceeds archive chunk size %d", chunkHeader.OrigSize, header.ChunkSize)
+				return archiveCorruptErrorf("chunk original size %d exceeds archive chunk size %d", chunkHeader.OrigSize, header.ChunkSize)
 			}
 			maxCompSize := chunkHeader.OrigSize*2 + 65536
 			if chunkHeader.CompSize > maxCompSize {
 				out.Close()
-				return fmt.Errorf("chunk compressed size %d exceeds hard limit %d", chunkHeader.CompSize, maxCompSize)
+				return archiveCorruptErrorf("chunk compressed size %d exceeds hard limit %d", chunkHeader.CompSize, maxCompSize)
 			}
 
 			// Track total compressed memory requested to avoid OOM from large/poisoned headers.
 			totalAllocated += uint64(chunkHeader.CompSize)
 			if totalAllocated > maxTotalChunkMem {
 				out.Close()
-				return fmt.Errorf("archive exceeds memory safety limit: %d bytes requested", totalAllocated)
+				return archiveCorruptErrorf("archive exceeds memory safety limit: %d bytes requested", totalAllocated)
 			}
 
 			buf := make([]byte, chunkHeader.CompSize)
@@ -220,7 +220,7 @@ func unpack(input, output, password string) error {
 
 			if uint32(len(data)) != chunkHeader.OrigSize {
 				out.Close()
-				return fmt.Errorf("chunk %d size mismatch: got %d want %d", chunkHeader.Index, len(data), chunkHeader.OrigSize)
+				return archiveCorruptErrorf("chunk %d size mismatch: got %d want %d", chunkHeader.Index, len(data), chunkHeader.OrigSize)
 			}
 
 			if _, err := out.Write(data); err != nil {

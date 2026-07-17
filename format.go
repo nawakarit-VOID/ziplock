@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -55,7 +56,12 @@ const (
 	chunkHeaderSize = 4 + 4 + 4 + 12
 )
 
-var errBadMagic = errors.New("invalid archive magic")
+var errBadMagic = errors.New("archive is corrupted")
+
+func archiveCorruptErrorf(format string, args ...any) error {
+	log.Printf("archive corruption detected: "+format, args...)
+	return errors.New("archive is corrupted")
+}
 
 func writeMagic(w io.Writer) error {
 	if _, err := w.Write(magic); err != nil {
@@ -156,7 +162,7 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 		return nil, err
 	}
 	if cipherSize == 0 || cipherSize > 1024 {
-		return nil, errors.New("invalid archive header cipher size")
+		return nil, archiveCorruptErrorf("invalid archive header cipher size: %d", cipherSize)
 	}
 
 	enc := make([]byte, cipherSize)
@@ -176,7 +182,7 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	mac.Write(enc)
 	expected := mac.Sum(nil)
 	if !hmac.Equal(macRead, expected) {
-		return nil, errors.New("archive HMAC verification failed")
+		return nil, archiveCorruptErrorf("archive HMAC verification failed")
 	}
 
 	aad := makeHeaderAAD(salt[:])
@@ -186,7 +192,7 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	}
 
 	if len(dec) != headerSizeBody {
-		return nil, errors.New("invalid decrypted archive header size")
+		return nil, archiveCorruptErrorf("invalid decrypted archive header size: got %d want %d", len(dec), headerSizeBody)
 	}
 
 	var h ArchiveHeader
@@ -195,7 +201,7 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 		return nil, err
 	}
 	if h.Version != formatVersion {
-		return nil, errors.New("invalid archive version in encrypted header")
+		return nil, archiveCorruptErrorf("invalid archive version in encrypted header: got %d", h.Version)
 	}
 	if err := binary.Read(decBuf, binary.LittleEndian, &h.Flags); err != nil {
 		return nil, err
