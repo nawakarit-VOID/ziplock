@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -115,6 +117,16 @@ func writeHeader(w io.Writer, h ArchiveHeader, key []byte) error {
 	if _, err := w.Write(enc); err != nil {
 		return err
 	}
+
+	// Compute and append a global HMAC over magic||salt||encrypted_header_ciphertext
+	mac := hmac.New(sha256.New, key)
+	mac.Write(magic)
+	mac.Write(h.Salt[:])
+	mac.Write(enc)
+	sum := mac.Sum(nil)
+	if _, err := w.Write(sum); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -150,6 +162,21 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	enc := make([]byte, cipherSize)
 	if _, err := io.ReadFull(r, enc); err != nil {
 		return nil, err
+	}
+
+	// Read and verify appended HMAC-SHA256 (32 bytes)
+	macRead := make([]byte, sha256.Size)
+	if _, err := io.ReadFull(r, macRead); err != nil {
+		return nil, err
+	}
+
+	mac := hmac.New(sha256.New, key)
+	mac.Write(magic)
+	mac.Write(salt[:])
+	mac.Write(enc)
+	expected := mac.Sum(nil)
+	if !hmac.Equal(macRead, expected) {
+		return nil, errors.New("archive HMAC verification failed")
 	}
 
 	aad := makeHeaderAAD(salt[:])
