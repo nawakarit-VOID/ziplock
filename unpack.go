@@ -41,6 +41,33 @@ func parseEntryMetadata(dec []byte) (EntryHeader, []byte, error) {
 	return entryHeader, pathBytes, nil
 }
 
+func writeOutputFile(path string, data io.Reader) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(tmp, data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
 func unpack(input, output, password string) error {
 	in, err := os.Open(input)
 	if err != nil {
@@ -158,43 +185,33 @@ func unpack(input, output, password string) error {
 			return err
 		}
 
-		out, err := os.Create(targetPath)
-		if err != nil {
-			return err
-		}
-
+		var chunkData bytes.Buffer
 		for chunkIndex := uint32(0); chunkIndex < entryHeader.ChunkCount; chunkIndex++ {
 			chunkHeader, err := readChunkHeader(in)
 			if err != nil {
-				out.Close()
 				return err
 			}
 
 			// ChunkHeader Sanity Checks
 			if chunkHeader.Index != chunkIndex {
-				out.Close()
 				return archiveCorruptErrorf("invalid chunk index: got %d want %d", chunkHeader.Index, chunkIndex)
 			}
 			if chunkHeader.OrigSize > header.ChunkSize {
-				out.Close()
 				return archiveCorruptErrorf("chunk original size %d exceeds archive chunk size %d", chunkHeader.OrigSize, header.ChunkSize)
 			}
 			maxCompSize := chunkHeader.OrigSize*2 + 65536
 			if chunkHeader.CompSize > maxCompSize {
-				out.Close()
 				return archiveCorruptErrorf("chunk compressed size %d exceeds hard limit %d", chunkHeader.CompSize, maxCompSize)
 			}
 
 			// Track total compressed memory requested to avoid OOM from large/poisoned headers.
 			totalAllocated += uint64(chunkHeader.CompSize)
 			if totalAllocated > maxTotalChunkMem {
-				out.Close()
 				return archiveCorruptErrorf("archive exceeds memory safety limit: %d bytes requested", totalAllocated)
 			}
 
 			buf := make([]byte, chunkHeader.CompSize)
 			if _, err := io.ReadFull(in, buf); err != nil {
-				out.Close()
 				return err
 			}
 
@@ -208,28 +225,24 @@ func unpack(input, output, password string) error {
 
 			dec, err := decrypt(buf, key, chunkHeader.Nonce[:], chunkAAD)
 			if err != nil {
-				out.Close()
 				return err
 			}
 
 			data, err := decoder.DecodeAll(dec, nil)
 			if err != nil {
-				out.Close()
 				return err
 			}
 
 			if uint32(len(data)) != chunkHeader.OrigSize {
-				out.Close()
 				return archiveCorruptErrorf("chunk %d size mismatch: got %d want %d", chunkHeader.Index, len(data), chunkHeader.OrigSize)
 			}
 
-			if _, err := out.Write(data); err != nil {
-				out.Close()
+			if _, err := chunkData.Write(data); err != nil {
 				return err
 			}
 		}
 
-		if err := out.Close(); err != nil {
+		if err := writeOutputFile(targetPath, bytes.NewReader(chunkData.Bytes())); err != nil {
 			return err
 		}
 	}
