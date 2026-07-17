@@ -15,6 +15,8 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+const maxTotalChunkMem = 2 << 30 // 2 GiB
+
 func parseEntryMetadata(dec []byte) (EntryHeader, []byte, error) {
 	if len(dec) < entryHeaderSize {
 		return EntryHeader{}, nil, fmt.Errorf("decrypted metadata too short")
@@ -76,6 +78,8 @@ func unpack(input, output, password string) error {
 	if err := os.MkdirAll(output, 0o755); err != nil {
 		return err
 	}
+
+	var totalAllocated uint64
 
 	for i := uint32(0); i < header.EntryCount; i++ {
 		var entryHeader EntryHeader
@@ -179,6 +183,13 @@ func unpack(input, output, password string) error {
 			if chunkHeader.CompSize > maxCompSize {
 				out.Close()
 				return fmt.Errorf("chunk compressed size %d exceeds hard limit %d", chunkHeader.CompSize, maxCompSize)
+			}
+
+			// Track total compressed memory requested to avoid OOM from large/poisoned headers.
+			totalAllocated += uint64(chunkHeader.CompSize)
+			if totalAllocated > maxTotalChunkMem {
+				out.Close()
+				return fmt.Errorf("archive exceeds memory safety limit: %d bytes requested", totalAllocated)
 			}
 
 			buf := make([]byte, chunkHeader.CompSize)
