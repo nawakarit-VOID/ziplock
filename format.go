@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -141,7 +142,7 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
-	if string(buf) != string(magic) {
+	if subtle.ConstantTimeCompare(buf, magic) != 1 {
 		return nil, errBadMagic
 	}
 
