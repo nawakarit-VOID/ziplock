@@ -84,6 +84,9 @@ func unpack(input, output, password string) error {
 	if header.Version != formatVersion {
 		return archiveCorruptErrorf("unsupported archive version: %d", header.Version)
 	}
+	if header.Flags != 0 || header.Reserved != 0 {
+		return archiveCorruptErrorf("invalid or unauthenticated archive flags: flags=%d reserved=%d", header.Flags, header.Reserved)
+	}
 	if header.ChunkSize < 1024 || header.ChunkSize > 16*1024*1024 {
 		return archiveCorruptErrorf("invalid archive chunk size: %d bytes", header.ChunkSize)
 	}
