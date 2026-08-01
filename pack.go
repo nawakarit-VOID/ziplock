@@ -185,7 +185,11 @@ func pack(input, output, password string) error {
 
 		info, err := os.Stat(entry.absPath)
 		if err != nil {
-			return err
+			if os.IsNotExist(err) || os.IsPermission(err) {
+				// If a file vanished after collection (e.g. temporary lock file), return clean error
+				return fmt.Errorf("file vanished or inaccessible (%s): %w", entry.absPath, err)
+			}
+			return fmt.Errorf("failed to stat file %s: %w", entry.absPath, err)
 		}
 		if info.IsDir() {
 			continue
@@ -193,7 +197,7 @@ func pack(input, output, password string) error {
 
 		file, err := os.Open(entry.absPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to open file %s: %w", entry.absPath, err)
 		}
 
 		for chunkIndex := uint32(0); chunkIndex < entryHeader.ChunkCount; chunkIndex++ {
@@ -219,12 +223,15 @@ func pack(input, output, password string) error {
 				return cleanupOnSecureRandomError(err, out, outputPath, "failed to generate secure random nonce")
 			}
 
-			compSize := uint32(len(comp) + 16)
+			// predictedCompSize = len(compressed) + 16-byte AES-GCM tag.
+			// AES-GCM always appends exactly 16 bytes, so this prediction is
+			// deterministic and matches what unpack reads from ChunkHeader.CompSize.
+			predictedCompSize := uint32(len(comp) + 16)
 			var chunkAAD bytes.Buffer
 			_ = binary.Write(&chunkAAD, binary.LittleEndian, uint32(entryIndex))
 			_ = binary.Write(&chunkAAD, binary.LittleEndian, chunkIndex)
 			_ = binary.Write(&chunkAAD, binary.LittleEndian, uint32(len(chunkData)))
-			_ = binary.Write(&chunkAAD, binary.LittleEndian, compSize)
+			_ = binary.Write(&chunkAAD, binary.LittleEndian, predictedCompSize)
 			_, _ = chunkAAD.Write(salt[:])
 
 			enc, err := encrypt(comp, key, nonce[:], chunkAAD.Bytes())
@@ -233,21 +240,24 @@ func pack(input, output, password string) error {
 				return err
 			}
 
+			// Verify our prediction was correct (catches any future AEAD implementation changes)
+			if uint32(len(enc)) != predictedCompSize {
+				file.Close()
+				return fmt.Errorf("internal: encrypted chunk size %d != predicted %d", len(enc), predictedCompSize)
+			}
+
 			chunkHeader := ChunkHeader{
 				Index:    chunkIndex,
 				OrigSize: uint32(len(chunkData)),
-				CompSize: uint32(len(enc)),
+				CompSize: predictedCompSize, // same value used in AAD
 				Nonce:    nonce,
 			}
 			// Chunk sanity checks
-			if chunkHeader.Index != chunkIndex {
-				return fmt.Errorf("chunk index mismatch: got %d, expected %d", chunkHeader.Index, chunkIndex)
-			}
 			if chunkHeader.OrigSize > uint32(chunkSize) {
 				return fmt.Errorf("chunk original size exceeds chunk size: %d > %d", chunkHeader.OrigSize, chunkSize)
 			}
-			// Allow some overhead for encryption (16 bytes) and possible compression overhead
-			maxAllowed := chunkHeader.OrigSize + 16 + 4096
+			// Allow overhead for zstd compression framing (max 64KB) + AES-GCM tag (16 bytes)
+			maxAllowed := chunkHeader.OrigSize + 65536 + 16
 			if chunkHeader.CompSize > maxAllowed {
 				return fmt.Errorf("chunk compressed size too large: %d > %d", chunkHeader.CompSize, maxAllowed)
 			}
@@ -291,18 +301,31 @@ func collectEntries(input string) ([]archiveEntry, string, error) {
 	var entries []archiveEntry
 
 	err = filepath.WalkDir(input, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == input {
+		// Use Lstat to safely check symlinks, lock files, and special files
+		fi, lstatErr := os.Lstat(path)
+		if lstatErr != nil {
+			// Skip files that vanished or cannot be lstated (e.g. dynamic lock files)
 			return nil
 		}
+
+		// Skip symbolic links (like lock files in profile directories) or socket/device files if needed
+		if fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeSocket != 0 || fi.Mode()&os.ModeNamedPipe != 0 {
+			return nil
+		}
+
 		rel, err := filepath.Rel(input, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
+
+		if fi.IsDir() {
+			if _, err := os.ReadDir(path); err != nil {
+				if os.IsNotExist(err) || os.IsPermission(err) {
+					return nil
+				}
+				return err
+			}
 			entries = append(entries, archiveEntry{
 				relPath: rel,
 				absPath: path,
@@ -310,15 +333,12 @@ func collectEntries(input string) ([]archiveEntry, string, error) {
 			})
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
+
 		entries = append(entries, archiveEntry{
 			relPath: rel,
 			absPath: path,
 			isDir:   false,
-			size:    uint64(info.Size()),
+			size:    uint64(fi.Size()),
 		})
 		return nil
 	})

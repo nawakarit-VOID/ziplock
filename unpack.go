@@ -120,6 +120,11 @@ func unpack(input, output, password string) error {
 		if err := binary.Read(in, binary.LittleEndian, &cipherSize); err != nil {
 			return err
 		}
+		// Hard limit: entry metadata ciphertext cannot exceed 8 KiB
+		// (entryHeaderSize=20 + MaxPathLen=4096 + GCM tag=16 + some padding)
+		if cipherSize == 0 || cipherSize > 8*1024 {
+			return archiveCorruptErrorf("invalid entry metadata cipher size: %d", cipherSize)
+		}
 		enc := make([]byte, cipherSize)
 		if _, err := io.ReadFull(in, enc); err != nil {
 			return err
@@ -204,7 +209,8 @@ func unpack(input, output, password string) error {
 			if chunkHeader.OrigSize > header.ChunkSize {
 				return archiveCorruptErrorf("chunk original size %d exceeds archive chunk size %d", chunkHeader.OrigSize, header.ChunkSize)
 			}
-			maxCompSize := chunkHeader.OrigSize*2 + 65536
+			// Standard maximum compressed limit: OrigSize + zstd max frame overhead (64KB) + AES-GCM tag (16 bytes)
+			maxCompSize := chunkHeader.OrigSize + 65536 + 16
 			if chunkHeader.CompSize > maxCompSize {
 				return archiveCorruptErrorf("chunk compressed size %d exceeds hard limit %d", chunkHeader.CompSize, maxCompSize)
 			}
