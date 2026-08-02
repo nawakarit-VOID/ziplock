@@ -71,10 +71,10 @@ func writeMagic(w io.Writer) error {
 	return nil
 }
 
-func makeHeaderAAD(salt []byte) []byte {
-	aad := make([]byte, len(magic)+len(salt))
-	copy(aad, magic)
-	copy(aad[len(magic):], salt)
+func makeHeaderAAD(magicBytes []byte, salt []byte) []byte {
+	aad := make([]byte, len(magicBytes)+len(salt))
+	copy(aad, magicBytes)
+	copy(aad[len(magicBytes):], salt)
 	return aad
 }
 
@@ -111,7 +111,7 @@ func writeHeader(w io.Writer, h ArchiveHeader, key []byte) error {
 		return err
 	}
 
-	aad := makeHeaderAAD(h.Salt[:])
+	aad := makeHeaderAAD(magic, h.Salt[:])
 	enc, err := encrypt(body.Bytes(), key, nonce[:], aad)
 	if err != nil {
 		return err
@@ -186,7 +186,7 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 		return nil, archiveCorruptErrorf("archive HMAC verification failed")
 	}
 
-	aad := makeHeaderAAD(salt[:])
+	aad := makeHeaderAAD(magic, salt[:])
 	dec, err := decrypt(enc, key, nonce[:], aad)
 	if err != nil {
 		return nil, err
