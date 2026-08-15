@@ -113,6 +113,37 @@ func unpack(input, output, password string, progressCb func(percent float64)) er
 	var totalUncompressedBytes int64
 	var totalUnpackedBytes int64
 
+	// Map to rewrite top-level folder names if collision exists in output directory
+	renamedMap := make(map[string]string)
+
+	getResolvedPath := func(relPath string) string {
+		parts := strings.Split(relPath, "/")
+		if len(parts) > 0 && parts[0] != "" {
+			if newRoot, exists := renamedMap[parts[0]]; exists {
+				parts[0] = newRoot
+				return strings.Join(parts, "/")
+			}
+			topPath := filepath.Join(output, parts[0])
+			if info, err := os.Stat(topPath); err == nil && info.IsDir() {
+				// Find non-conflicting folder name e.g., folder (1), folder (2)
+				counter := 1
+				for {
+					candidate := fmt.Sprintf("%s (%d)", parts[0], counter)
+					candPath := filepath.Join(output, candidate)
+					if _, err := os.Stat(candPath); os.IsNotExist(err) {
+						renamedMap[parts[0]] = candidate
+						parts[0] = candidate
+						break
+					}
+					counter++
+				}
+			} else {
+				renamedMap[parts[0]] = parts[0]
+			}
+		}
+		return strings.Join(parts, "/")
+	}
+
 	for i := uint32(0); i < header.EntryCount; i++ {
 		var entryHeader EntryHeader
 		var pathBytes []byte
@@ -183,6 +214,7 @@ func unpack(input, output, password string, progressCb func(percent float64)) er
 			continue
 		}
 
+		relPath = getResolvedPath(relPath)
 		targetPath := filepath.Join(output, filepath.FromSlash(relPath))
 
 		if entryHeader.Type == entryTypeDir {
