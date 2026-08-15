@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -387,7 +388,8 @@ func runGUI() {
 	})
 
 	browseUnpackInput := widget.NewButtonWithIcon("เลือกไฟล์ .ziplock", theme.FileIcon(), func() {
-		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
+		filter := storage.NewExtensionFileFilter([]string{".ziplock"})
+		fileDialog := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
 			if err != nil || r == nil {
 				return
 			}
@@ -397,6 +399,8 @@ func runGUI() {
 				unpackInputPath.SetText(path)
 			})
 		}, w)
+		fileDialog.SetFilter(filter)
+		fileDialog.Show()
 	})
 
 	browseUnpackOutput := widget.NewButtonWithIcon("เลือกโฟลเดอร์", theme.FolderOpenIcon(), func() {
