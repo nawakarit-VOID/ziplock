@@ -51,7 +51,7 @@ func cleanupOnSecureRandomError(err error, out *os.File, outputPath, message str
 	return fmt.Errorf("%s: %w", message, err)
 }
 
-func pack(input, output, password string) error {
+func pack(input, output, password string, progressCb func(percent float64)) error {
 	entries, rootName, err := collectEntries(input)
 	if err != nil {
 		return err
@@ -272,7 +272,14 @@ func pack(input, output, password string) error {
 			}
 
 			written += int64(len(chunkData))
-			fmt.Printf("\rProgress: %.2f%%", float64(written)/float64(totalFiles)*100)
+			pct := float64(written) / float64(totalFiles) * 100
+			if pct > 100 {
+				pct = 100
+			}
+			fmt.Printf("\rProgress: %.2f%%", pct)
+			if progressCb != nil {
+				progressCb(pct)
+			}
 		}
 
 		file.Close()

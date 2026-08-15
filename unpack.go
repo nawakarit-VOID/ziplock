@@ -68,7 +68,7 @@ func writeOutputFile(path string, data io.Reader) error {
 	return nil
 }
 
-func unpack(input, output, password string) error {
+func unpack(input, output, password string, progressCb func(percent float64)) error {
 	in, err := os.Open(input)
 	if err != nil {
 		return err
@@ -110,6 +110,8 @@ func unpack(input, output, password string) error {
 	}
 
 	var totalAllocated uint64
+	var totalUncompressedBytes int64
+	var totalUnpackedBytes int64
 
 	for i := uint32(0); i < header.EntryCount; i++ {
 		var entryHeader EntryHeader
@@ -173,6 +175,7 @@ func unpack(input, output, password string) error {
 			if entryHeader.ChunkCount != expectedChunks {
 				return archiveCorruptErrorf("invalid chunk count: got %d want %d", entryHeader.ChunkCount, expectedChunks)
 			}
+			totalUncompressedBytes += int64(entryHeader.UncompressedSize)
 		}
 
 		relPath := sanitizeArchivePath(string(pathBytes))
@@ -254,6 +257,18 @@ func unpack(input, output, password string) error {
 			if _, err := chunkData.Write(data); err != nil {
 				return err
 			}
+
+			totalUnpackedBytes += int64(len(data))
+			if totalUncompressedBytes > 0 {
+				pct := float64(totalUnpackedBytes) / float64(totalUncompressedBytes) * 100
+				if pct > 100 {
+					pct = 100
+				}
+				fmt.Printf("\rProgress: %.2f%%", pct)
+				if progressCb != nil {
+					progressCb(pct)
+				}
+			}
 		}
 
 		if err := writeOutputFile(targetPath, bytes.NewReader(chunkData.Bytes())); err != nil {
@@ -261,7 +276,7 @@ func unpack(input, output, password string) error {
 		}
 	}
 
-	fmt.Println("Unpacked")
+	fmt.Println("\nDone")
 	return nil
 }
 

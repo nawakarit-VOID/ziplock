@@ -311,7 +311,8 @@ func runGUI() {
 	status.SetText("พร้อมใช้งาน")
 	status.Disable()
 
-	progress := widget.NewProgressBarInfinite()
+	progress := widget.NewProgressBar()
+	progress.SetValue(0)
 	progress.Hide()
 
 	appendStatus := func(msg string) {
@@ -328,6 +329,7 @@ func runGUI() {
 	setBusy := func(busy bool) {
 		runOnUI(func() {
 			if busy {
+				progress.SetValue(0)
 				progress.Show()
 				packBtn.Disable()
 				unpackBtn.Disable()
@@ -443,7 +445,11 @@ func runGUI() {
 		appendStatus(fmt.Sprintf("กำลัง pack → %s", output))
 		setBusy(true)
 		go func() {
-			err := pack(input, output, pass)
+			err := pack(input, output, pass, func(pct float64) {
+				runOnUI(func() {
+					progress.SetValue(pct / 100.0)
+				})
+			})
 			setBusy(false)
 			runOnUI(func() {
 				if err != nil {
@@ -473,7 +479,11 @@ func runGUI() {
 		appendStatus("กำลัง unpack...")
 		setBusy(true)
 		go func() {
-			err := unpack(input, output, pass)
+			err := unpack(input, output, pass, func(pct float64) {
+				runOnUI(func() {
+					progress.SetValue(pct / 100.0)
+				})
+			})
 			setBusy(false)
 			runOnUI(func() {
 				if err != nil {

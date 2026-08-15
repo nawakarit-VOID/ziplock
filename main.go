@@ -29,11 +29,11 @@ func main() {
 
 	switch os.Args[1] {
 	case "pack":
-		if err := pack(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+		if err := pack(os.Args[2], os.Args[3], os.Args[4], nil); err != nil {
 			fmt.Println("Error:", err)
 		}
 	case "unpack":
-		if err := unpack(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+		if err := unpack(os.Args[2], os.Args[3], os.Args[4], nil); err != nil {
 			fmt.Println("Error:", err)
 		}
 	default:
