@@ -32,14 +32,18 @@ func main() {
 	if len(os.Args) < 5 {
 		fmt.Println("Usage:")
 		fmt.Println("  ziplock gui")
-		fmt.Println("  ziplock pack input output.ziplock password")
+		fmt.Println("  ziplock pack input output.ziplock password [comment]")
 		fmt.Println("  ziplock unpack input.ziplock output password")
 		return
 	}
 
 	switch os.Args[1] {
 	case "pack":
-		if err := pack(os.Args[2], os.Args[3], os.Args[4], nil); err != nil {
+		comment := ""
+		if len(os.Args) >= 6 {
+			comment = os.Args[5]
+		}
+		if err := pack(os.Args[2], os.Args[3], os.Args[4], comment, nil); err != nil {
 			fmt.Println("Error:", err)
 		}
 	case "unpack":

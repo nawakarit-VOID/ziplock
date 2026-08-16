@@ -293,16 +293,21 @@ func runGUI() {
 	packInputPath := widget.NewEntry()
 	packOutputDir := widget.NewEntry()  // โฟลเดอร์ปลายทาง
 	packOutputName := widget.NewEntry() // ชื่อไฟล์
+	packComment := widget.NewEntry()    // ข้อความกำกับ (อ่านได้อย่างเดียวเมื่อสร้างแล้ว)
 	packPassword := widget.NewPasswordEntry()
 	unpackInputPath := widget.NewEntry()
+	unpackCommentDisplay := widget.NewEntry() // แสดงข้อความที่ยืนยันแล้ว
 	unpackOutputPath := widget.NewEntry()
 	unpackPassword := widget.NewPasswordEntry()
 
 	packInputPath.SetPlaceHolder("เลือกไฟล์หรือโฟลเดอร์ต้นทาง")
 	packOutputDir.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
 	packOutputName.SetPlaceHolder("ชื่อไฟล์ .ziplock (ตั้งอัตโนมัติ แก้ไขได้)")
+	packComment.SetPlaceHolder("ใส่ข้อความยืนยันลายนิ้วมือ/ข้อความกำกับ (ป้องกันการดัดแปลง)")
 	packPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ pack")
 	unpackInputPath.SetPlaceHolder("เลือกไฟล์ .ziplock")
+	unpackCommentDisplay.SetPlaceHolder("ข้อความกำกับไฟล์ (ต้องใส่รหัสผ่านที่ถูกต้องก่อนถอดรหัส)")
+	unpackCommentDisplay.Disable()
 	unpackOutputPath.SetPlaceHolder("เลือกโฟลเดอร์ปลายทาง")
 	unpackPassword.SetPlaceHolder("ใส่รหัสผ่านสำหรับ unpack")
 
@@ -397,6 +402,7 @@ func runGUI() {
 			_ = r.Close()
 			runOnUI(func() {
 				unpackInputPath.SetText(path)
+				unpackCommentDisplay.SetText("")
 			})
 		}, w)
 		fileDialog.SetFilter(filter)
@@ -420,6 +426,7 @@ func runGUI() {
 		input := packInputPath.Text
 		outDir := strings.TrimSpace(packOutputDir.Text)
 		outName := strings.TrimSpace(packOutputName.Text)
+		comment := packComment.Text
 		pass := packPassword.Text
 
 		if input == "" || pass == "" {
@@ -449,7 +456,7 @@ func runGUI() {
 		appendStatus(fmt.Sprintf("กำลัง pack → %s", output))
 		setBusy(true)
 		go func() {
-			err := pack(input, output, pass, func(pct float64) {
+			err := pack(input, output, pass, comment, func(pct float64) {
 				runOnUI(func() {
 					progress.SetValue(pct / 100.0)
 				})
@@ -483,6 +490,7 @@ func runGUI() {
 		appendStatus("กำลัง unpack...")
 		setBusy(true)
 		go func() {
+			var extractedComment string
 			err := unpack(input, output, pass, func(pct float64) {
 				runOnUI(func() {
 					progress.SetValue(pct / 100.0)
@@ -494,6 +502,17 @@ func runGUI() {
 					appendStatus("Error: " + err.Error())
 					dialog.ShowError(err, w)
 					return
+				}
+				// แสดงข้อความกำกับที่ยืนยันแล้วหลังถอดรหัสสำเร็จ
+				if f, openErr := os.Open(input); openErr == nil {
+					if h, readErr := readHeader(f, pass); readErr == nil {
+						extractedComment = h.Comment
+					}
+					_ = f.Close()
+				}
+				if extractedComment != "" {
+					unpackCommentDisplay.SetText(extractedComment)
+					appendStatus("ข้อความกำกับไฟล์ที่ยืนยันแล้ว: " + extractedComment)
 				}
 				appendStatus("Unpack สำเร็จ")
 				dialog.ShowInformation("ziplock", "Unpack สำเร็จ", w)
@@ -521,6 +540,7 @@ func runGUI() {
 			field("ต้นทาง", packInputPath, browsePackInput),
 			field("โฟลเดอร์ปลายทาง", packOutputDir, browsePackOutputDir),
 			fieldNoBtn("ชื่อไฟล์เอาต์พุต", packOutputName),
+			fieldNoBtn("ข้อความยืนยัน/ลายนิ้วมือ (ไม่สามารถแก้ไขได้ภายหลัง)", packComment),
 			widget.NewLabelWithStyle("รหัสผ่าน", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			packPassword,
 			widget.NewSeparator(),
@@ -532,6 +552,7 @@ func runGUI() {
 		container.NewVBox(
 			field("ไฟล์ .ziplock", unpackInputPath, browseUnpackInput),
 			field("ปลายทาง", unpackOutputPath, browseUnpackOutput),
+			fieldNoBtn("ข้อความกำกับที่ได้รับการยืนยันความถูกต้อง", unpackCommentDisplay),
 			widget.NewLabelWithStyle("รหัสผ่าน", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			unpackPassword,
 			widget.NewSeparator(),

@@ -28,6 +28,7 @@ type ArchiveHeader struct {
 	Reserved   uint16
 	ChunkSize  uint32
 	EntryCount uint32
+	Comment    string
 	Salt       [16]byte
 }
 
@@ -101,6 +102,14 @@ func writeHeader(w io.Writer, h ArchiveHeader, key []byte) error {
 		return err
 	}
 	if err := binary.Write(&body, binary.LittleEndian, h.EntryCount); err != nil {
+		return err
+	}
+	commentBytes := []byte(h.Comment)
+	commentLen := uint32(len(commentBytes))
+	if err := binary.Write(&body, binary.LittleEndian, commentLen); err != nil {
+		return err
+	}
+	if _, err := body.Write(commentBytes); err != nil {
 		return err
 	}
 
@@ -193,8 +202,8 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 		return nil, err
 	}
 
-	if len(dec) != headerSizeBody {
-		return nil, archiveCorruptErrorf("invalid decrypted archive header size: got %d want %d", len(dec), headerSizeBody)
+	if len(dec) < headerSizeBody+4 {
+		return nil, archiveCorruptErrorf("invalid decrypted archive header size: got %d", len(dec))
 	}
 
 	var h ArchiveHeader
@@ -217,6 +226,22 @@ func readHeader(r io.Reader, password string) (*ArchiveHeader, error) {
 	if err := binary.Read(decBuf, binary.LittleEndian, &h.EntryCount); err != nil {
 		return nil, err
 	}
+
+	var commentLen uint32
+	if err := binary.Read(decBuf, binary.LittleEndian, &commentLen); err != nil {
+		return nil, err
+	}
+	if commentLen > 4096 {
+		return nil, archiveCorruptErrorf("archive comment length too large: %d", commentLen)
+	}
+	if decBuf.Len() < int(commentLen) {
+		return nil, archiveCorruptErrorf("archive comment data truncated")
+	}
+	commentBytes := make([]byte, commentLen)
+	if _, err := io.ReadFull(decBuf, commentBytes); err != nil {
+		return nil, err
+	}
+	h.Comment = string(commentBytes)
 	h.Salt = salt
 	return &h, nil
 }
@@ -245,13 +270,14 @@ func readChunkHeader(r io.Reader) (*ChunkHeader, error) {
 	return &h, nil
 }
 
-func makeArchiveHeader(chunkSize uint32, entryCount uint32, salt [16]byte) ArchiveHeader {
+func makeArchiveHeader(chunkSize uint32, entryCount uint32, comment string, salt [16]byte) ArchiveHeader {
 	return ArchiveHeader{
 		Version:    formatVersion,
 		Flags:      0,
 		Reserved:   0,
 		ChunkSize:  chunkSize,
 		EntryCount: entryCount,
+		Comment:    comment,
 		Salt:       salt,
 	}
 }

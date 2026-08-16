@@ -51,7 +51,7 @@ func cleanupOnSecureRandomError(err error, out *os.File, outputPath, message str
 	return fmt.Errorf("%s: %w", message, err)
 }
 
-func pack(input, output, password string, progressCb func(percent float64)) error {
+func pack(input, output, password, comment string, progressCb func(percent float64)) error {
 	entries, rootName, err := collectEntries(input)
 	if err != nil {
 		return err
@@ -86,7 +86,7 @@ func pack(input, output, password string, progressCb func(percent float64)) erro
 		return fmt.Errorf("entry count exceeds limit: %d", len(entries))
 	}
 
-	header := makeArchiveHeader(chunkSize, uint32(len(entries)), salt)
+	header := makeArchiveHeader(chunkSize, uint32(len(entries)), comment, salt)
 	key := deriveKey(password, salt[:])
 	if err := writeHeader(out, header, key); err != nil {
 		cleanupOutputFile(out, outputPath)
