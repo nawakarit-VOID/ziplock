@@ -6,7 +6,17 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 )
+
+func init() {
+	numCPU := runtime.NumCPU()
+	threads := numCPU - 1
+	if threads < 1 {
+		threads = 1
+	}
+	runtime.GOMAXPROCS(threads)
+}
 
 // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 // # Main #

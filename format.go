@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"runtime"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -264,7 +265,11 @@ func zeroizeBytes(b []byte) {
 // deriveKey creates the archive key from password and salt using Argon2id.
 func deriveKey(password string, salt []byte) []byte {
 	pwd := []byte(password)
-	key := argon2.IDKey(pwd, salt, 1, 64*1024, 4, 32)
+	threads := uint8(runtime.GOMAXPROCS(0))
+	if threads < 1 {
+		threads = 1
+	}
+	key := argon2.IDKey(pwd, salt, 1, 64*1024, threads, 32)
 	zeroizeBytes(pwd)
 	return key
 }
